@@ -1,0 +1,30 @@
+name: SMP Trading Bot
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'  # Her 4 saatte bir
+  workflow_dispatch:         # Manuel tetikleme butonu
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Kodu indir
+      uses: actions/checkout@v3
+
+    - name: Python kur
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Kutuphaneleri kur
+      run: |
+        pip install yfinance pandas numpy scipy requests
+
+    - name: Tarama yap
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        python telegram_bot.py scan
