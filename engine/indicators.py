@@ -1,318 +1,281 @@
 """
 engine/indicators.py
-Pine Script SMP V2.8.2 indikatörlerinin birebir Python karşılıkları.
-Her fonksiyon Pine Script'teki ilgili bölüme referans verir.
+SMP V3.0 — Tum indikatörler + Yeni modüller
+V2.8.2 + TST Core + Zone Binning + HA Breakout + VPA Climax
 """
 
 import pandas as pd
 import numpy as np
-from scipy import stats
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 1: RVOL & TEMEL HESAPLAMALAR
-# Pine Script: "RVOL & GLOBAL TARİHSEL HESAPLAMALAR"
+# BÖLÜM 1: TEMEL HESAPLAMALAR
 # ══════════════════════════════════════════════════════════════════
 
-def calc_rvol(volume: pd.Series, length: int = 20) -> pd.Series:
-    """
-    Relative Volume (Göreceli Hacim)
-    Pine: rvol = volume / (avgVol + 0.0001)
-    """
+def calc_rvol(volume, length=20):
     avg_vol = volume.rolling(length).mean()
-    rvol = volume / (avg_vol + 0.0001)
-    return rvol.rename("rvol")
+    return (volume / (avg_vol + 0.0001)).rename("rvol")
 
-
-def calc_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    """ATR — ta.atr() karşılığı"""
+def calc_atr(high, low, close, period=14):
     hl = high - low
     hc = (high - close.shift(1)).abs()
     lc = (low - close.shift(1)).abs()
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    atr = tr.rolling(period).mean()
-    return atr.rename(f"atr_{period}")
+    return tr.rolling(period).mean().rename(f"atr_{period}")
 
-
-def calc_ema(series: pd.Series, period: int) -> pd.Series:
-    """EMA — ta.ema() karşılığı"""
+def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean().rename(f"ema_{period}")
 
-
-def calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """RSI — ta.rsi() karşılığı"""
+def calc_rsi(close, period=14):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / (loss + 1e-10)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.rename(f"rsi_{period}")
+    return (100 - (100 / (1 + rs))).rename(f"rsi_{period}")
 
-
-def calc_macd(close: pd.Series, fast=12, slow=26, signal=9) -> pd.DataFrame:
-    """
-    MACD — ta.macd() karşılığı
-    Returns: DataFrame with macd_line, macd_signal, macd_hist
-    """
+def calc_macd(close, fast=12, slow=26, signal=9):
     ema_fast = calc_ema(close, fast)
     ema_slow = calc_ema(close, slow)
     macd_line = ema_fast - ema_slow
     macd_signal = calc_ema(macd_line, signal)
     macd_hist = macd_line - macd_signal
-    return pd.DataFrame({
-        "macd_line": macd_line,
-        "macd_signal": macd_signal,
-        "macd_hist": macd_hist,
-    })
+    return pd.DataFrame({"macd_line": macd_line, "macd_signal": macd_signal, "macd_hist": macd_hist})
 
-
-def calc_adx(high: pd.Series, low: pd.Series, close: pd.Series,
-             period: int = 14) -> pd.DataFrame:
-    """
-    ADX + DI+/DI- — ta.dmi() karşılığı
-    Pine: [diPlus, diMinus, adxVal] = ta.dmi(14, 14)
-    """
+def calc_adx(high, low, close, period=14):
     up_move = high.diff()
     down_move = -low.diff()
-    
     dm_plus = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     dm_minus = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    
     atr = calc_atr(high, low, close, period)
-    
     di_plus = 100 * pd.Series(dm_plus, index=high.index).rolling(period).mean() / (atr + 1e-10)
     di_minus = 100 * pd.Series(dm_minus, index=high.index).rolling(period).mean() / (atr + 1e-10)
-    
     dx = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus + 1e-10))
     adx = dx.rolling(period).mean()
-    
-    return pd.DataFrame({
-        "di_plus": di_plus,
-        "di_minus": di_minus,
-        "adx": adx,
-    })
+    return pd.DataFrame({"di_plus": di_plus, "di_minus": di_minus, "adx": adx})
 
-
-def calc_vwap(high: pd.Series, low: pd.Series, close: pd.Series,
-              volume: pd.Series, period: int = 20) -> pd.Series:
-    """
-    Rolling VWAP (ta.vwap() karşılığı — Pine'da session bazlı ama biz rolling kullanıyoruz)
-    """
+def calc_vwap(high, low, close, volume, period=20):
     hlc3 = (high + low + close) / 3
-    vwap = (hlc3 * volume).rolling(period).sum() / volume.rolling(period).sum()
-    return vwap.rename("vwap")
+    return ((hlc3 * volume).rolling(period).sum() / volume.rolling(period).sum()).rename("vwap")
 
-
-def calc_mfi(high: pd.Series, low: pd.Series, close: pd.Series,
-             volume: pd.Series, period: int = 14) -> pd.Series:
-    """
-    Money Flow Index — Pine Script MFI hesabı ile birebir
-    Pine: pmfSum / nmfSum mantığı
-    """
+def calc_mfi(high, low, close, volume, period=14):
     tp = (high + low + close) / 3
     mf = tp * volume
-    
     positive_mf = mf.where(tp > tp.shift(1), 0.0).rolling(period).sum()
     negative_mf = mf.where(tp < tp.shift(1), 0.0).rolling(period).sum()
-    
-    # Pine: 100 - (100 / (1 + mfr)) — nmfSum=0 durumunda mfr=100
     mfr = positive_mf / (negative_mf + 1e-10)
-    mfi = 100 - (100 / (1 + mfr))
-    return mfi.rename(f"mfi_{period}")
+    return (100 - (100 / (1 + mfr))).rename(f"mfi_{period}")
 
-
-def calc_bollinger(close: pd.Series, period: int = 20, mult: float = 2.0) -> pd.DataFrame:
-    """Bollinger Bands — ta.bb() karşılığı"""
+def calc_bollinger(close, period=20, mult=2.0):
     mid = close.rolling(period).mean()
     std = close.rolling(period).std()
-    upper = mid + mult * std
-    lower = mid - mult * std
-    return pd.DataFrame({"bb_upper": upper, "bb_mid": mid, "bb_lower": lower})
+    return pd.DataFrame({"bb_upper": mid + mult*std, "bb_mid": mid, "bb_lower": mid - mult*std})
+
+def calc_obv(close, volume):
+    direction = np.sign(close.diff()).fillna(0)
+    return (direction * volume).cumsum().rename("obv")
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 2: WHALE MOTORU
-# Pine Script: "COLD/HOT WHALE MOTORU"
+# BÖLÜM 2: WHALE MOTORU (SMP V2.8.2)
 # ══════════════════════════════════════════════════════════════════
 
-def calc_whale_score(high: pd.Series, low: pd.Series,
-                     open_: pd.Series, close: pd.Series,
-                     volume: pd.Series, rvol: pd.Series,
-                     mfi: pd.Series, obv: pd.Series,
-                     eff_min_m: float = 2.0,
-                     v_len: int = 20) -> pd.DataFrame:
-    """
-    Whale güven skoru (0-100)
-    Pine Script'teki wPt1..wPt5 mantığının birebir karşılığı.
-    """
+def calc_whale_score(high, low, open_, close, volume, rvol, mfi, obv, eff_min_m=2.0):
     dv = volume * close
     dv_m = dv / 1e6
     is_bull = (close >= open_).astype(float)
-    
     atr = calc_atr(high, low, close, 14)
-    
-    # wPt1: RVOL primi (max 30)
     pt1 = ((rvol - 1.0) * 12.0).clip(0, 30)
-    
-    # wPt2: İşlem büyüklüğü (max 20)
     pt2 = ((dv_m / (eff_min_m + 0.001) - 0.5) * 10.0).clip(0, 20)
-    
-    # wPt3: MFI yön skoru (max 20)
     mfi_bull = (mfi - 50.0).clip(lower=0) * 0.8
     mfi_bear = (50.0 - mfi).clip(lower=0) * 0.8
-    mfi_score = is_bull * mfi_bull + (1 - is_bull) * mfi_bear
-    pt3 = mfi_score.clip(0, 20)
-    
-    # wPt4: Mum gövde oranı (max 15)
+    pt3 = (is_bull * mfi_bull + (1 - is_bull) * mfi_bear).clip(0, 20)
     body_rat = (close - open_).abs() / (atr + 0.001)
     pt4 = (body_rat * 7.5).clip(0, 15)
-    
-    # wPt5: OBV momentum (max 15)
     obv_sma = obv.rolling(20).mean()
     obv_mom = (obv - obv.shift(3)).abs() / (obv_sma.abs() + 0.001) * 100
     pt5 = (obv_mom * 0.3).clip(0, 15)
-    
     w_score = (pt1 + pt2 + pt3 + pt4 + pt5).clip(0, 100)
-    
-    is_whale_buy = (w_score >= 40) & (dv_m >= eff_min_m) & (close >= open_)
-    is_whale_sell = (w_score >= 40) & (dv_m >= eff_min_m) & (close < open_)
-    
     return pd.DataFrame({
         "whale_score": w_score,
-        "is_whale_buy": is_whale_buy,
-        "is_whale_sell": is_whale_sell,
+        "is_whale_buy": (w_score >= 40) & (dv_m >= eff_min_m) & (close >= open_),
+        "is_whale_sell": (w_score >= 40) & (dv_m >= eff_min_m) & (close < open_),
         "dv_m": dv_m,
     })
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 3: VSA SCALP ZIRHI
-# Pine Script: "VSA (VOLUME SPREAD ANALYSIS) SCALP ZIRHI"
+# BÖLÜM 3: VSA SCALP ZIRHI (SMP V2.8.2)
 # ══════════════════════════════════════════════════════════════════
 
-def calc_vsa_shield(high: pd.Series, low: pd.Series,
-                    open_: pd.Series, close: pd.Series,
-                    volume: pd.Series,
-                    lookback: int = 168,
-                    threshold: float = 1.0) -> pd.DataFrame:
-    """
-    VSA Scalp Zırhı — Pine Script'teki sıfır-lag regresyon tabanlı anomali tespiti.
-    
-    Dönüş: vsa_bc (Buying Climax), vsa_ut (Upthrust), vsa_sc (Selling Climax),
-           vsa_spr (Spring), vsa_dt (No Demand / Distribution Test)
-    """
+def calc_vsa_shield(high, low, open_, close, volume, lookback=168, threshold=1.0):
     atr = calc_atr(high, low, close, lookback)
     bar_range = high - low
-    
     norm_range = bar_range / (atr + 0.0001)
     vol_sma = volume.rolling(lookback).mean()
     norm_vol = volume / (vol_sma + 0.0001)
-    
-    # Kayan lineer regresyon (slope + intercept)
-    # Pine: denom = mean_xx - mean_x*mean_x
-    x = norm_vol
-    y = norm_range
-    
+    x, y = norm_vol, norm_range
     mean_x = x.rolling(lookback).mean()
     mean_y = y.rolling(lookback).mean()
     mean_xx = (x * x).rolling(lookback).mean()
     mean_xy = (x * y).rolling(lookback).mean()
     std_x = x.rolling(lookback).std()
     std_y = y.rolling(lookback).std()
-    
     denom = mean_xx - mean_x * mean_x
     slope = (mean_xy - mean_x * mean_y) / denom.replace(0, np.nan)
     intercept = mean_y - slope * mean_x
-    
-    r_denom = std_x * std_y
-    r_val = (mean_xy - mean_x * mean_y) / r_denom.replace(0, np.nan)
-    
-    pred_range = intercept + slope * x
-    dev = y - pred_range
-    
-    # Pine: slope <= 0 veya |r| < 0.5 ise dev=0
-    bad_fit = (slope <= 0) | (r_val.abs() < 0.5)
-    dev_filtered = dev.where(~bad_fit, 0.0)
-    
-    # Mum yapısı
-    vsa_range = high - low
+    r_val = (mean_xy - mean_x * mean_y) / (std_x * std_y).replace(0, np.nan)
+    dev = y - (intercept + slope * x)
+    dev_filtered = dev.where(~((slope <= 0) | (r_val.abs() < 0.5)), 0.0)
     body = (close - open_).abs()
     upper_wick = high - pd.concat([open_, close], axis=1).max(axis=1)
     lower_wick = pd.concat([open_, close], axis=1).min(axis=1) - low
-    
-    upper_wick_ratio = upper_wick / (vsa_range + 1e-10)
-    lower_wick_ratio = lower_wick / (vsa_range + 1e-10)
-    close_upper_half = ((close - low) / (vsa_range + 1e-10)) > 0.6
-    
+    upper_wick_ratio = upper_wick / (bar_range + 1e-10)
+    lower_wick_ratio = lower_wick / (bar_range + 1e-10)
+    close_upper_half = ((close - low) / (bar_range + 1e-10)) > 0.6
     is_bull = close > open_
     is_wide = norm_range > 1.5
     is_high_vol = norm_vol > 1.5
-    
     signal_pos = dev_filtered > threshold
     signal_neg = dev_filtered < -threshold
-    
-    # Pine: vsa_BC, vsa_UT, vsa_SC, vsa_SPR, vsa_DT
-    vsa_bc  = signal_pos & is_bull & is_wide & is_high_vol & ~close_upper_half
-    vsa_ut  = signal_pos & (upper_wick_ratio > 0.35) & is_high_vol
-    vsa_sc  = signal_neg & ~is_bull & is_wide & is_high_vol
-    vsa_spr = signal_pos & (lower_wick_ratio > 0.35) & is_high_vol & is_bull
-    vsa_dt  = signal_neg & (norm_range < 0.6) & is_high_vol
-    
     return pd.DataFrame({
-        "vsa_bc": vsa_bc,
-        "vsa_ut": vsa_ut,
-        "vsa_sc": vsa_sc,
-        "vsa_spr": vsa_spr,
-        "vsa_dt": vsa_dt,
+        "vsa_bc":  signal_pos & is_bull & is_wide & is_high_vol & ~close_upper_half,
+        "vsa_ut":  signal_pos & (upper_wick_ratio > 0.35) & is_high_vol,
+        "vsa_sc":  signal_neg & ~is_bull & is_wide & is_high_vol,
+        "vsa_spr": signal_pos & (lower_wick_ratio > 0.35) & is_high_vol & is_bull,
+        "vsa_dt":  signal_neg & (norm_range < 0.6) & is_high_vol,
         "dev_filtered": dev_filtered,
     })
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 4: ADR VE DİNAMİK RİSK
-# Pine Script: "ADR VE DİNAMİK RİSK (POSITION SIZING) MOTORU"
+# BÖLÜM 4: ADR STOP (SMP V2.8.2)
 # ══════════════════════════════════════════════════════════════════
 
-def calc_adr_stop(close: pd.Series,
-                  adr_pct: pd.Series,
-                  adr_mult: float = 1.5,
-                  slip_pct: float = 0.1) -> pd.DataFrame:
-    """
-    ADR tabanlı dinamik stop mesafesi hesabı.
-    Pine: safe_stop_dist_pct = max(adr_pct * adr_mult + slip_pct, 0.1)
-    """
+def calc_adr_stop(close, adr_pct, adr_mult=1.5, slip_pct=0.1):
     safe_stop = (adr_pct * adr_mult + slip_pct).clip(lower=0.1)
-    sl_long = close * (1 - safe_stop / 100)
-    sl_short = close * (1 + safe_stop / 100)
-    
     return pd.DataFrame({
         "safe_stop_pct": safe_stop,
-        "sl_long": sl_long,
-        "sl_short": sl_short,
+        "sl_long":  close * (1 - safe_stop / 100),
+        "sl_short": close * (1 + safe_stop / 100),
     })
 
 
-def calc_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
-    """OBV (On-Balance Volume) — ta.obv karşılığı"""
-    direction = np.sign(close.diff()).fillna(0)
-    obv = (direction * volume).cumsum()
-    return obv.rename("obv")
+# ══════════════════════════════════════════════════════════════════
+# BÖLÜM 5: TST CORE — Fourier + ADF Momentum
+# Kaynak: Direnci Kiran Ziplar Aga
+# ADX'in yerini alir — piyasa yataysa isleme izin vermez
+# ══════════════════════════════════════════════════════════════════
+
+def calc_tst_core(close, volume, length=14, smoothing=5,
+                  signal_len=9, four_len=20, four_blend=0.4,
+                  momentum_lookback=8):
+    rel_volume    = volume / volume.rolling(length).mean().clip(lower=0.0001)
+    price_change  = close.diff()
+    smoothed_vol  = rel_volume.ewm(span=smoothing, adjust=False).mean()
+    smoothed_chg  = price_change.ewm(span=smoothing, adjust=False).mean()
+    base_momentum = (smoothed_chg * smoothed_vol).ewm(span=smoothing, adjust=False).mean()
+    pos_mom = base_momentum.clip(lower=0).ewm(span=length, adjust=False).mean()
+    neg_mom = base_momentum.clip(upper=0).abs().ewm(span=length, adjust=False).mean()
+    ratio   = pos_mom / neg_mom.clip(lower=0.00001)
+    tst_ema = (100.0 * (ratio - 1.0) / (ratio + 1.0)).clip(-100, 100)
+    tst_fourier = tst_ema.rolling(four_len).mean()
+    sma_s = tst_ema.rolling(max(1, length // 3)).mean()
+    sma_l = tst_ema.rolling(length).mean()
+    vol_s = tst_ema.rolling(length).std()
+    ts    = ((sma_s - sma_l) / vol_s.clip(lower=0.0001)).clip(-0.1, 0.1)
+    adf_mult = 1.0 + ts * 0.2
+    tst = ((tst_ema * (1 - four_blend) + tst_fourier * four_blend) * adf_mult).clip(-100, 100)
+    tst_signal = tst.rolling(signal_len).mean()
+    flow_momentum = (tst - tst.ewm(span=momentum_lookback, adjust=False).mean()) * 0.5
+    adf_ok = (adf_mult - 1.0).abs() > 0.001
+    return pd.DataFrame({
+        "tst":           tst,
+        "tst_signal":    tst_signal,
+        "flow_momentum": flow_momentum,
+        "tst_bull":      (tst > 0) & (tst > tst.shift(1)),
+        "tst_bear":      (tst < 0) & (tst < tst.shift(1)),
+        "adf_ok":        adf_ok,
+    })
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 5: HEPSI BİR ARADA — ANA HESAPLAMA FONKSİYONU
+# BÖLÜM 6: EMA COMPRESSION BREAKOUT
+# Kaynak: Tavan Avcisi
+# EMA 5-8-13 altinda ezilme + hacimli patlama
 # ══════════════════════════════════════════════════════════════════
 
-def compute_all_indicators(df: pd.DataFrame,
-                           adr_series: pd.Series = None,
-                           preset: str = "Default") -> pd.DataFrame:
-    """
-    Tüm indikatörleri hesapla ve df'e ekle.
-    adr_series: günlük ADR verisi (farklı TF'den gelir, reindex edilir)
-    preset: "Scalping", "Default", "Aggressive", "Swing", "Conservative"
-    """
-    
-    # Preset'e göre parametreler (Pine Script ile birebir)
+def calc_ema_compression(close, open_, volume, bask_gun=2,
+                          hacim_carp=1.2, hacim_per=20):
+    ema5  = close.ewm(span=5,  adjust=False).mean()
+    ema8  = close.ewm(span=8,  adjust=False).mean()
+    ema13 = close.ewm(span=13, adjust=False).mean()
+    avg_vol = volume.rolling(hacim_per).mean()
+    yuksek_hacim = volume > (avg_vol * hacim_carp)
+    altinda = (close < ema5) & (close < ema8) & (close < ema13)
+    gecmis_baski = altinda.rolling(bask_gun + 1).sum() >= bask_gun
+    ustunde = (close > ema5) & (close > ema8) & (close > ema13)
+    boga_mumu = close > open_
+    compression_breakout = gecmis_baski.shift(1) & ustunde & yuksek_hacim & boga_mumu
+    return pd.DataFrame({
+        "ema5": ema5, "ema8": ema8, "ema13": ema13,
+        "ema_altinda": altinda,
+        "compression_breakout": compression_breakout,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
+# BÖLÜM 7: HEİKİN ASHI SERT KOPUŞ
+# Kaynak: Roket Kirilim
+# HA mumunun EMA 55'i govdeyle yutmasi
+# ══════════════════════════════════════════════════════════════════
+
+def calc_ha_breakout(open_, high, low, close, ema_period=55, min_pct=0.015):
+    ha_close = (open_ + high + low + close) / 4
+    ha_open  = ha_close.copy()
+    for i in range(1, len(ha_open)):
+        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
+    ha_govde_ust = pd.concat([ha_open, ha_close], axis=1).max(axis=1)
+    ha_govde_boy = (ha_govde_ust - pd.concat([ha_open, ha_close], axis=1).min(axis=1))
+    ema55 = close.ewm(span=ema_period, adjust=False).mean()
+    yesil_mum  = ha_close > ha_open
+    sert_kopis = (ha_close > ema55) & (ha_close > ha_close.shift(1) * (1 + min_pct))
+    yarim_boy  = (ha_govde_ust - ema55) > (ha_govde_boy * 0.4)
+    return pd.DataFrame({
+        "ha_close":    ha_close,
+        "ha_open":     ha_open,
+        "ema55":       ema55,
+        "ha_breakout": yesil_mum & sert_kopis & yarim_boy,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
+# BÖLÜM 8: VPA CLİMAX — Tepe/Dip Tükenis Tespiti
+# Kaynak: Deep Impact
+# Devasa hacim + Dar Govde + Uzun Igne = Tukenme = Cikis sinyali
+# ══════════════════════════════════════════════════════════════════
+
+def calc_vpa_climax(open_, high, low, close, volume, climax_mult=2.5):
+    avg_vol    = volume.rolling(20).mean()
+    vol_climax = volume > avg_vol * climax_mult
+    bar_range  = high - low
+    body       = (close - open_).abs()
+    upper_wick = high - pd.concat([open_, close], axis=1).max(axis=1)
+    lower_wick = pd.concat([open_, close], axis=1).min(axis=1) - low
+    narrow_body = body < bar_range * 0.3
+    long_upper  = upper_wick > bar_range * 0.4
+    long_lower  = lower_wick > bar_range * 0.4
+    return pd.DataFrame({
+        "buying_climax":  vol_climax & narrow_body & long_upper,
+        "selling_climax": vol_climax & narrow_body & long_lower,
+        "vol_climax":     vol_climax,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
+# BÖLÜM 9: ANA HESAPLAMA FONKSİYONU
+# ══════════════════════════════════════════════════════════════════
+
+def compute_all_indicators(df, adr_series=None, preset="Default"):
     presets = {
         "Scalping":     {"fast": 5,  "mid": 13, "slow": 34, "rsi": 8},
         "Aggressive":   {"fast": 8,  "mid": 18, "slow": 50, "rsi": 11},
@@ -321,59 +284,66 @@ def compute_all_indicators(df: pd.DataFrame,
         "Swing":        {"fast": 13, "mid": 34, "slow": 89, "rsi": 21},
     }
     p = presets.get(preset, presets["Default"])
-    
     out = df.copy()
-    
+
     # EMA ribbon
     out["ema_fast"] = calc_ema(df["close"], p["fast"])
     out["ema_mid"]  = calc_ema(df["close"], p["mid"])
     out["ema_slow"] = calc_ema(df["close"], p["slow"])
     out["ema_200"]  = calc_ema(df["close"], 200)
-    
+
     # Momentum
     out["rsi"] = calc_rsi(df["close"], p["rsi"])
-    macd_df    = calc_macd(df["close"])
-    out        = pd.concat([out, macd_df], axis=1)
-    
-    # ADX
-    adx_df = calc_adx(df["high"], df["low"], df["close"])
-    out    = pd.concat([out, adx_df], axis=1)
-    
-    # Bollinger
-    bb_df = calc_bollinger(df["close"])
-    out   = pd.concat([out, bb_df], axis=1)
-    
+    out = pd.concat([out, calc_macd(df["close"])], axis=1)
+    out = pd.concat([out, calc_adx(df["high"], df["low"], df["close"])], axis=1)
+    out = pd.concat([out, calc_bollinger(df["close"])], axis=1)
+
     # Volume
-    out["rvol"]  = calc_rvol(df["volume"])
-    out["obv"]   = calc_obv(df["close"], df["volume"])
-    out["vwap"]  = calc_vwap(df["high"], df["low"], df["close"], df["volume"])
-    out["mfi"]   = calc_mfi(df["high"], df["low"], df["close"], df["volume"])
-    
+    out["rvol"] = calc_rvol(df["volume"])
+    out["obv"]  = calc_obv(df["close"], df["volume"])
+    out["vwap"] = calc_vwap(df["high"], df["low"], df["close"], df["volume"])
+    out["mfi"]  = calc_mfi(df["high"], df["low"], df["close"], df["volume"])
+
     # Whale motoru
-    whale_df = calc_whale_score(
+    out = pd.concat([out, calc_whale_score(
         df["high"], df["low"], df["open"], df["close"],
         df["volume"], out["rvol"], out["mfi"], out["obv"]
-    )
-    out = pd.concat([out, whale_df], axis=1)
-    
-    # VSA zırhı
-    vsa_df = calc_vsa_shield(
+    )], axis=1)
+
+    # VSA zirhi
+    out = pd.concat([out, calc_vsa_shield(
         df["high"], df["low"], df["open"], df["close"], df["volume"]
-    )
-    out = pd.concat([out, vsa_df], axis=1)
-    
-    # ADR stop (günlük veri varsa kullan, yoksa basit ATR bazlı hesapla)
+    )], axis=1)
+
+    # ADR stop
     if adr_series is not None:
         adr_reindexed = adr_series.reindex(out.index, method="ffill")
     else:
-        # Fallback: ATR bazlı basit tahmin
         atr = calc_atr(df["high"], df["low"], df["close"], 14)
         adr_reindexed = (atr / df["close"] * 100).rolling(14).mean()
-    
-    adr_df = calc_adr_stop(df["close"], adr_reindexed)
-    out    = pd.concat([out, adr_df], axis=1)
+    out = pd.concat([out, calc_adr_stop(df["close"], adr_reindexed)], axis=1)
     out["adr_pct"] = adr_reindexed
-    
+
+    # --- V3 YENİ MODÜLLER ---
+
+    # TST Core (ADX'in yerini alir)
+    out = pd.concat([out, calc_tst_core(df["close"], df["volume"])], axis=1)
+
+    # EMA Compression Breakout
+    out = pd.concat([out, calc_ema_compression(
+        df["close"], df["open"], df["volume"]
+    )], axis=1)
+
+    # Heikin Ashi Breakout
+    out = pd.concat([out, calc_ha_breakout(
+        df["open"], df["high"], df["low"], df["close"]
+    )], axis=1)
+
+    # VPA Climax (cikis sinyali)
+    out = pd.concat([out, calc_vpa_climax(
+        df["open"], df["high"], df["low"], df["close"], df["volume"]
+    )], axis=1)
+
     return out
 
 
@@ -381,10 +351,9 @@ if __name__ == "__main__":
     import sys
     sys.path.append("..")
     from data.fetcher import fetch_ohlcv
-    
     df = fetch_ohlcv("BTC-USD", interval="4h", period="1y")
     result = compute_all_indicators(df, preset="Default")
-    print(result[["close", "ema_fast", "ema_mid", "ema_slow",
-                  "rsi", "adx", "rvol", "whale_score", "dev_filtered"]].tail(10))
-    print(f"\nToplam sütun: {len(result.columns)}")
-    print(f"NaN satır sayısı (son 100): {result.tail(100).isna().any(axis=1).sum()}")
+    print(result[["close", "ema_fast", "rsi", "tst", "adf_ok",
+                  "compression_breakout", "ha_breakout",
+                  "buying_climax"]].tail(5))
+    print(f"\nToplam sutun: {len(result.columns)}")
