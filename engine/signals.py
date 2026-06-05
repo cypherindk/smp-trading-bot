@@ -1,7 +1,7 @@
 """
 engine/signals.py
-SMP V3.0 — Sinyal Motoru
-TST bonus puan, VPA filtre kaldirildi
+SMP V3.1 — V2.8.2 sinyal mantigi + VPA Climax cikis filtresi
+TST, HA, Compression kaldirildi
 """
 
 import pandas as pd
@@ -33,10 +33,7 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         htf_bull = htf_bias == 1
         htf_bear = htf_bias == -1
 
-    tst_bull = ind["tst_bull"] if "tst_bull" in ind.columns else pd.Series(False, index=ind.index)
-    tst_bear = ind["tst_bear"] if "tst_bear" in ind.columns else pd.Series(False, index=ind.index)
-    adf_ok   = ind["adf_ok"]   if "adf_ok"   in ind.columns else pd.Series(True,  index=ind.index)
-
+    # V2.8.2 orijinal skor — TST kaldirildi
     bull = (
         ema_bull_cross.astype(float)      * 1.0 +
         close_above_slow.astype(float)    * 1.0 +
@@ -47,8 +44,7 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         bull_dmi.astype(float)            * 1.0 +
         htf_bull.astype(float)            * 1.5 +
         w_bull_recent.astype(float)       * 1.0 +
-        (ind["rvol"] > 3.0).astype(float) * 1.5 +
-        tst_bull.astype(float)            * 2.0
+        (ind["rvol"] > 3.0).astype(float) * 1.5
     )
 
     bear = (
@@ -61,8 +57,7 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         bear_dmi.astype(float)            * 1.0 +
         htf_bear.astype(float)            * 1.5 +
         w_sell_recent.astype(float)       * 1.0 +
-        (ind["rvol"] > 3.0).astype(float) * 1.5 +
-        tst_bear.astype(float)            * 2.0
+        (ind["rvol"] > 3.0).astype(float) * 1.5
     )
 
     if use_bb_filter:
@@ -78,9 +73,6 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         "w_sell_recent": w_sell_recent,
         "macd_bull":     macd_bull,
         "macd_bear":     macd_bear,
-        "tst_bull":      tst_bull,
-        "tst_bear":      tst_bear,
-        "adf_ok":        adf_ok,
     })
 
 
@@ -154,6 +146,10 @@ def generate_signals(ind, scores, triggers, preset="Default",
         vsa_ok_bull = pd.Series(True, index=ind.index)
         vsa_ok_bear = pd.Series(True, index=ind.index)
 
+    # V3.1: VPA Climax varsa girme (cikis korumasi)
+    vpa_no_buy  = ~ind["buying_climax"]  if "buying_climax"  in ind.columns else pd.Series(True, index=ind.index)
+    vpa_no_sell = ~ind["selling_climax"] if "selling_climax" in ind.columns else pd.Series(True, index=ind.index)
+
     raw_buy = (
         triggers["trigger_bull"] &
         ana_trend_bull &
@@ -164,7 +160,8 @@ def generate_signals(ind, scores, triggers, preset="Default",
         score_ok_bull &
         grade_ok_bull &
         conf_ok_bull &
-        vsa_ok_bull
+        vsa_ok_bull &
+        vpa_no_buy
     )
 
     raw_sell = (
@@ -177,7 +174,8 @@ def generate_signals(ind, scores, triggers, preset="Default",
         score_ok_bear &
         grade_ok_bear &
         conf_ok_bear &
-        vsa_ok_bear
+        vsa_ok_bear &
+        vpa_no_sell
     )
 
     return pd.DataFrame({
