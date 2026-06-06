@@ -1,7 +1,6 @@
 """
 engine/signals.py
-SMP V3.1 — V2.8.2 sinyal mantigi + VPA Climax cikis filtresi
-TST, HA, Compression kaldirildi
+SMP V3.1 — V2.8.2 + VPA Climax filtresi + Zone POC bonus puan
 """
 
 import pandas as pd
@@ -33,7 +32,10 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         htf_bull = htf_bias == 1
         htf_bear = htf_bias == -1
 
-    # V2.8.2 orijinal skor — TST kaldirildi
+    # Zone POC bonus — filtre degil, puan
+    poc_bull = ind["above_poc"] if "above_poc" in ind.columns else pd.Series(False, index=ind.index)
+    poc_bear = ind["below_poc"] if "below_poc" in ind.columns else pd.Series(False, index=ind.index)
+
     bull = (
         ema_bull_cross.astype(float)      * 1.0 +
         close_above_slow.astype(float)    * 1.0 +
@@ -44,7 +46,8 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         bull_dmi.astype(float)            * 1.0 +
         htf_bull.astype(float)            * 1.5 +
         w_bull_recent.astype(float)       * 1.0 +
-        (ind["rvol"] > 3.0).astype(float) * 1.5
+        (ind["rvol"] > 3.0).astype(float) * 1.5 +
+        poc_bull.astype(float)            * 1.0
     )
 
     bear = (
@@ -57,7 +60,8 @@ def calc_bull_bear_score(ind, htf_bias=None, use_bb_filter=False):
         bear_dmi.astype(float)            * 1.0 +
         htf_bear.astype(float)            * 1.5 +
         w_sell_recent.astype(float)       * 1.0 +
-        (ind["rvol"] > 3.0).astype(float) * 1.5
+        (ind["rvol"] > 3.0).astype(float) * 1.5 +
+        poc_bear.astype(float)            * 1.0
     )
 
     if use_bb_filter:
@@ -146,7 +150,7 @@ def generate_signals(ind, scores, triggers, preset="Default",
         vsa_ok_bull = pd.Series(True, index=ind.index)
         vsa_ok_bear = pd.Series(True, index=ind.index)
 
-    # V3.1: VPA Climax varsa girme (cikis korumasi)
+    # VPA Climax filtresi
     vpa_no_buy  = ~ind["buying_climax"]  if "buying_climax"  in ind.columns else pd.Series(True, index=ind.index)
     vpa_no_sell = ~ind["selling_climax"] if "selling_climax" in ind.columns else pd.Series(True, index=ind.index)
 
