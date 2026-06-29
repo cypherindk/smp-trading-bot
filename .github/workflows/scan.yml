@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  scan:
+  smp_scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,8 +20,28 @@ jobs:
       - name: Install dependencies
         run: pip install pandas numpy scipy requests yfinance vectorbt optuna
 
-      - name: Run scanner
+      - name: SMP V3.1 Tarama
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python telegram_bot.py scan
+
+  kraken_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy scipy requests yfinance vectorbt optuna
+
+      - name: KRAKEN BIST100 Tarama
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python kraken_bot.py scan
