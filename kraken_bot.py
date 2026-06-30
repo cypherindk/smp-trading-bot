@@ -1,11 +1,7 @@
 """
 kraken_bot.py
 Project KRAKEN V16 — Telegram Sinyal Botu
-Her gun BIST100 tarar, sinyal varsa Telegram'a gonderir.
-
-Kullanim:
-  python kraken_bot.py test    -> Test mesaji gonder
-  python kraken_bot.py scan    -> Simdi tara ve gonder
+Ayri bot/kanal kullanir (KRAKEN_BOT_TOKEN)
 """
 
 import sys
@@ -20,7 +16,7 @@ from data.fetcher import fetch_ohlcv
 from kraken.indicators import compute_kraken_indicators
 from kraken.runner import BIST100, DEFAULT_PARAMS
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8220091488:AAGAZDtlqTr3MVW66RjEEdDDXdF0O1ZAZTI")
+BOT_TOKEN = os.environ.get("KRAKEN_BOT_TOKEN", "8878521032:AAEOT33_i6BIexNe5MdXd9XBqfnRejXLxRc")
 CHAT_ID   = os.environ.get("CHAT_ID", "959954532")
 
 
@@ -116,8 +112,9 @@ def send_test():
     msg = f"""🤖 <b>KRAKEN Bot Aktif!</b>
 
 BIST100 tarayici basariyla baglandi.
+Bu kendi ozel Telegram kanalinizdir.
 
-Her gun piyasa kapanisinda otomatik tarama yapilacak.
+Hafta ici her gun 18:30'da otomatik tarama yapilacak.
 Sinyal geldiginde bu mesaj formatinda bildirim alacaksiniz.
 
 Baslangic: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""

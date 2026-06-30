@@ -3,7 +3,7 @@ name: SMP Trading Bot
 on:
   schedule:
     - cron: '0 */4 * * *'      # SMP: her 4 saatte bir
-    - cron: '30 15 * * 1-5'    # KRAKEN: hafta ici 18:30 TR saati, piyasa kapanisi sonrasi
+    - cron: '30 15 * * 1-5'    # KRAKEN: hafta ici 18:30 TR saati
   workflow_dispatch:
 
 jobs:
@@ -45,6 +45,6 @@ jobs:
 
       - name: KRAKEN BIST100 Tarama
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          KRAKEN_BOT_TOKEN: ${{ secrets.KRAKEN_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python kraken_bot.py scan
