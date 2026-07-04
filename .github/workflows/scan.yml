@@ -2,14 +2,15 @@ name: SMP Trading Bot
 
 on:
   schedule:
-    - cron: '0 */4 * * *'      # SMP: her 4 saatte bir
-    - cron: '30 15 * * 1-5'    # KRAKEN: hafta ici 18:30 TR saati
+    - cron: '0 */4 * * *'      # her 4 saatte bir: kripto + BIST100 birlikte
   workflow_dispatch:
+
+permissions:
+  contents: write   # state/bist_state.json dosyasini geri commit'lemek icin gerekli
 
 jobs:
   smp_scan:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 */4 * * *' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -22,29 +23,16 @@ jobs:
       - name: Install dependencies
         run: pip install pandas numpy scipy requests yfinance vectorbt optuna
 
-      - name: SMP V3.1 Tarama
+      - name: SMP Tarama (Kripto + BIST100)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python telegram_bot.py scan
 
-  kraken_scan:
-    runs-on: ubuntu-latest
-    if: github.event.schedule == '30 15 * * 1-5' || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install pandas numpy scipy requests yfinance vectorbt optuna
-
-      - name: KRAKEN BIST100 Tarama
-        env:
-          KRAKEN_BOT_TOKEN: ${{ secrets.KRAKEN_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python kraken_bot.py scan
+      - name: State dosyasini commit'le (dedup hafizasi)
+        run: |
+          git config user.name "smp-bot"
+          git config user.email "smp-bot@users.noreply.github.com"
+          git add state/bist_state.json || true
+          git diff --cached --quiet || git commit -m "chore: update BIST notification state [skip ci]"
+          git push || true
