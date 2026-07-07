@@ -1,25 +1,24 @@
 """
 telegram_bot.py
-SMP V3.1 — Kripto (BTC/ETH/SOL) + BIST100 birlesik tarama.
+SMP V3.1 — Kripto (BTC/ETH/SOL) + BIST100 birlesik tarama, ikisi de 4H.
 
 Degisiklikler (onceki versiyona gore):
-  1) yfinance "4h" interval'i DESTEKLEMIYOR. Bu yuzden kripto icin artik
-     1h veri cekilip 4h'e resample ediliyor (fetch_smart fonksiyonu).
+  1) yfinance "4h" interval'i DESTEKLEMIYOR. Bu yuzden hem kripto hem BIST
+     icin artik 1h veri cekilip 4h'e resample ediliyor (fetch_smart).
      Onceki kod interval="4h" ile direkt cagirdigi icin muhtemelen hep
      hata aliyor ve hicbir sinyal Telegram'a gitmiyordu.
-  2) BIST100 hisseleri de ayni taramaya eklendi (gunluk mumla, "1d").
-  3) BIST sinyalleri icin ayni gun icinde tekrar tekrar mesaj atmayi
-     onlemek amaciyla basit bir "state" (hafiza) dosyasi kullaniliyor:
-     state/bist_state.json. Bu dosyanin GitHub Actions'ta calisma
-     sonrasi repoya geri commit'lenmesi gerekiyor (workflow'a eklendi).
+  2) BIST100 hisseleri ayni taramaya eklendi — kullanicinin TradingView
+     grafiginde SMP indikatorunu 4 saatlik (4sa) zaman diliminde
+     kullandigi teyit edildi, bu yuzden gunluk (1d) degil 4h kullanildi.
+  3) State/dedup dosyasina artik gerek yok: kripto ile ayni mantik
+     (son 2 mumda sinyal var mi kontrolu) BIST icin de yeterli.
 """
 
 import sys
 import os
-import json
 import time
 import requests
-from datetime import datetime, date
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,9 +35,6 @@ CHAT_ID = os.environ.get("CHAT_ID")
 
 if not BOT_TOKEN or not CHAT_ID:
     print("UYARI: BOT_TOKEN veya CHAT_ID environment variable eksik.")
-
-STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "state", "bist_state.json")
 
 # ── Kripto parametreleri (mevcut, degismedi) ──
 COINS = {
@@ -65,32 +61,6 @@ BIST_EFF_SCORE = 5.0
 BIST_MIN_CONF = 2
 BIST_RR_RATIO = 2.0
 BIST_REQUEST_DELAY = 0.6  # ardisik yfinance istekleri arasi bekleme
-
-
-# ───────────────────────── State (dedup) yardimcilari ─────────────────────────
-
-def load_state() -> dict:
-    try:
-        with open(STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_state(state: dict):
-    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-
-def already_notified_today(state: dict, ticker: str, direction: str) -> bool:
-    key = f"{ticker}:{direction}"
-    return state.get(key) == str(date.today())
-
-
-def mark_notified(state: dict, ticker: str, direction: str):
-    key = f"{ticker}:{direction}"
-    state[key] = str(date.today())
 
 
 # ───────────────────────── Veri cekme yardimcisi ─────────────────────────
@@ -190,10 +160,25 @@ Kendi analizinizi de yapin."""
     return msg.strip()
 
 
+def format_whale_message(w: dict) -> str:
+    side = "🟢 ALIM" if w["side"] == "BUY" else "🔴 SATIŞ"
+    return f"""🐋 <b>WHALE ALERT</b> — {side}
+━━━━━━━━━━━━━━━━━━━━━
+<b>{w['label']}</b>
+Whale Skoru: {w['whale_score']:.0f}%
+İşlem Hacmi: {w['dv_m']:.2f}M {w['currency']}
+Fiyat: {w['price']:,.4f} {w['currency']}
+⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━
+Bu, ana SMP sinyalinden bağımsız bir para akışı uyarısıdır.
+Sadece takip listesi amaçlıdır."""
+
+
 # ───────────────────────── Tarama mantigi ─────────────────────────
 
-def scan_crypto() -> list:
+def scan_crypto():
     opportunities = []
+    whale_events = []
     for coin, p in COINS.items():
         try:
             df = fetch_smart(coin, "4h", "60d")
@@ -207,6 +192,16 @@ def scan_crypto() -> list:
             sg = generate_signals(ind, sc, tr, preset=p["preset"],
                                    eff_score=p["eff_score"], min_conf=p["min_conf"])
             fs = apply_all_filters(ind, sg, use_cvd=True)
+
+            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir)
+            if ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]:
+                whale_events.append({
+                    "label": p["symbol"], "currency": "USD",
+                    "side": "BUY" if ind["is_whale_buy"].iloc[-1] else "SELL",
+                    "whale_score": ind["whale_score"].iloc[-1],
+                    "dv_m": ind["dv_m"].iloc[-1],
+                    "price": df["close"].iloc[-1],
+                })
 
             recent_buy = fs["buy_signal"].iloc[-2:].any()
             recent_sell = fs["sell_signal"].iloc[-2:].any()
@@ -247,15 +242,17 @@ def scan_crypto() -> list:
         except Exception as e:
             print(f"  {coin}: hata — {e}")
 
-    return opportunities
+    return opportunities, whale_events
 
 
-def scan_bist(state: dict) -> list:
+def scan_bist():
     opportunities = []
+    whale_events = []
     for ticker in BIST100_YF:
         try:
-            df = fetch_ohlcv(ticker, interval="1d", period="1y")
+            df = fetch_smart(ticker, "4h", "60d")
             if len(df) < 60:
+                print(f"  {ticker}: yetersiz veri ({len(df)} bar)")
                 continue
 
             ind = compute_all_indicators(df, preset=BIST_PRESET)
@@ -265,8 +262,20 @@ def scan_bist(state: dict) -> list:
                                    eff_score=BIST_EFF_SCORE, min_conf=BIST_MIN_CONF)
             fs = apply_all_filters(ind, sg, use_cvd=True)
 
-            recent_buy = fs["buy_signal"].iloc[-1]
-            recent_sell = fs["sell_signal"].iloc[-1]
+            label = ticker.replace(".IS", "")
+
+            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir)
+            if ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]:
+                whale_events.append({
+                    "label": label, "currency": "TRY",
+                    "side": "BUY" if ind["is_whale_buy"].iloc[-1] else "SELL",
+                    "whale_score": ind["whale_score"].iloc[-1],
+                    "dv_m": ind["dv_m"].iloc[-1],
+                    "price": df["close"].iloc[-1],
+                })
+
+            recent_buy = fs["buy_signal"].iloc[-2:].any()
+            recent_sell = fs["sell_signal"].iloc[-2:].any()
             if not recent_buy and not recent_sell:
                 continue
 
@@ -276,11 +285,6 @@ def scan_bist(state: dict) -> list:
             stop_pct = ind["safe_stop_pct"].iloc[-1]
 
             direction = "LONG" if (recent_buy and bull_score >= bear_score) else "SHORT"
-
-            # Ayni gun icinde ayni hisse+yon icin tekrar bildirim yapma
-            label = ticker.replace(".IS", "")
-            if already_notified_today(state, label, direction):
-                continue
 
             score = bull_score if direction == "LONG" else bear_score
             tp1_pct = stop_pct * 1.0
@@ -301,7 +305,7 @@ def scan_bist(state: dict) -> list:
                 "price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
                 "stop_pct": stop_pct, "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
                 "rr": tp2_pct / stop_pct if stop_pct > 0 else 0,
-                "priority": 9, "dedup_key": (label, direction),
+                "priority": 9, "dedup_key": None,
             })
             print(f"  {ticker}: {direction} sinyali (skor={score:.1f})")
 
@@ -310,42 +314,47 @@ def scan_bist(state: dict) -> list:
 
         time.sleep(BIST_REQUEST_DELAY)
 
-    return opportunities
+    return opportunities, whale_events
 
 
 def scan_and_notify():
     print(f"\n[{datetime.now().strftime('%H:%M')}] SMP Tarama basladi "
           f"(3 kripto + {len(BIST100_YF)} BIST hissesi)...")
 
-    state = load_state()
+    crypto_opps, crypto_whales = scan_crypto()
+    bist_opps, bist_whales = scan_bist()
 
-    opportunities = []
-    opportunities += scan_crypto()
-    opportunities += scan_bist(state)
+    opportunities = crypto_opps + bist_opps
+    whale_events = crypto_whales + bist_whales
 
-    if not opportunities:
+    if opportunities:
+        opportunities.sort(key=lambda x: (x["priority"], -x["score"]))
+        for opp in opportunities:
+            msg = format_signal_message(opp)
+            ok = send_message(msg)
+            print(f"  {opp['label']} mesaji {'gonderildi' if ok else 'gonderilemedi'}")
+            time.sleep(1)
+    else:
         print("  Aktif sinyal yok.")
-        return 0
 
-    opportunities.sort(key=lambda x: (x["priority"], -x["score"]))
+    if whale_events:
+        whale_events.sort(key=lambda x: -x["whale_score"])
+        for w in whale_events:
+            msg = format_whale_message(w)
+            ok = send_message(msg)
+            print(f"  {w['label']} whale alert {'gonderildi' if ok else 'gonderilemedi'}")
+            time.sleep(1)
+    else:
+        print("  Whale alert yok.")
 
-    for opp in opportunities:
-        msg = format_signal_message(opp)
-        ok = send_message(msg)
-        print(f"  {opp['label']} mesaji {'gonderildi' if ok else 'gonderilemedi'}")
-        if ok and opp["dedup_key"]:
-            mark_notified(state, *opp["dedup_key"])
-        time.sleep(1)
-
-    save_state(state)
-    return len(opportunities)
+    return len(opportunities) + len(whale_events)
 
 
 def send_test_message():
     msg = f"""🤖 <b>SMP Bot Aktif!</b>
 
 Kripto: BTC/USDT, ETH/USDT, SOL/USDT (4H)
-BIST100: {len(BIST100_YF)} hisse (Gunluk)
+BIST100: {len(BIST100_YF)} hisse (4H)
 
 Baslangic: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
     ok = send_message(msg)
