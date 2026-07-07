@@ -84,6 +84,10 @@ def fetch_smart(symbol: str, timeframe: str, period: str, resample_offset: str =
             "open": "first", "high": "max", "low": "min",
             "close": "last", "volume": "sum",
         }).dropna()
+        # Hacmi 0 olan mumlar seans disi/hayalet barlardir (orn. BIST'te
+        # 06:00-10:00 gibi islem olmayan bir saat araligindan gelen
+        # yaniltici tek-tik veri) -- bunlari cikariyoruz.
+        df = df[df["volume"] > 0]
         df.index.name = "Date"
         return df
     return fetch_ohlcv(symbol, interval=timeframe, period=period)
