@@ -61,6 +61,7 @@ BIST_EFF_SCORE = 5.0
 BIST_MIN_CONF = 2
 BIST_RR_RATIO = 2.0
 BIST_REQUEST_DELAY = 0.6  # ardisik yfinance istekleri arasi bekleme
+WHALE_SCORE_THRESHOLD = 80  # sadece bu skor ve ustundeki whale alert'ler gonderilir
 
 
 # ───────────────────────── Veri cekme yardimcisi ─────────────────────────
@@ -193,12 +194,14 @@ def scan_crypto():
                                    eff_score=p["eff_score"], min_conf=p["min_conf"])
             fs = apply_all_filters(ind, sg, use_cvd=True)
 
-            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir)
-            if ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]:
+            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir,
+            # sadece esik ustundeki gercekten hacimli olanlar gonderilir)
+            whale_score_now = ind["whale_score"].iloc[-1]
+            if (ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]) and whale_score_now >= WHALE_SCORE_THRESHOLD:
                 whale_events.append({
                     "label": p["symbol"], "currency": "USD",
                     "side": "BUY" if ind["is_whale_buy"].iloc[-1] else "SELL",
-                    "whale_score": ind["whale_score"].iloc[-1],
+                    "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
                 })
@@ -264,12 +267,14 @@ def scan_bist():
 
             label = ticker.replace(".IS", "")
 
-            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir)
-            if ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]:
+            # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir,
+            # sadece esik ustundeki gercekten hacimli olanlar gonderilir)
+            whale_score_now = ind["whale_score"].iloc[-1]
+            if (ind["is_whale_buy"].iloc[-1] or ind["is_whale_sell"].iloc[-1]) and whale_score_now >= WHALE_SCORE_THRESHOLD:
                 whale_events.append({
                     "label": label, "currency": "TRY",
                     "side": "BUY" if ind["is_whale_buy"].iloc[-1] else "SELL",
-                    "whale_score": ind["whale_score"].iloc[-1],
+                    "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
                 })
