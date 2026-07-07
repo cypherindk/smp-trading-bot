@@ -66,14 +66,21 @@ WHALE_SCORE_THRESHOLD = 80  # sadece bu skor ve ustundeki whale alert'ler gonder
 
 # ───────────────────────── Veri cekme yardimcisi ─────────────────────────
 
-def fetch_smart(symbol: str, timeframe: str, period: str):
+def fetch_smart(symbol: str, timeframe: str, period: str, resample_offset: str = None):
     """
     yfinance "4h" interval'ini desteklemez. "4h" istenirse 1h veri cekip
     4h'e resample eder. Diger interval'ler (orn. "1d") direkt gecer.
+
+    resample_offset: BIST icin "2h" verilir -- boylece 4h barlar varsayilan
+    00:00/04:00/08:00... yerine 10:00-14:00 / 14:00-18:00 seans saatlerine
+    hizalanir (BIST seansi 10:00-18:00 TR). Bu olmadan barlarin basi/sonu
+    yarim seans veri iceriyordu, bu da TradingView'deki gercek 4h mumlardan
+    farkli kesisim/sinyal tarihlerine yol aciyordu.
     """
     if timeframe in ("4h", "4H"):
         raw = fetch_ohlcv(symbol, interval="1h", period=period)
-        df = raw.resample("4h").agg({
+        resample_kwargs = {"offset": resample_offset} if resample_offset else {}
+        df = raw.resample("4h", **resample_kwargs).agg({
             "open": "first", "high": "max", "low": "min",
             "close": "last", "volume": "sum",
         }).dropna()
@@ -253,7 +260,7 @@ def scan_bist():
     whale_events = []
     for ticker in BIST100_YF:
         try:
-            df = fetch_smart(ticker, "4h", "60d")
+            df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
             if len(df) < 60:
                 print(f"  {ticker}: yetersiz veri ({len(df)} bar)")
                 continue
