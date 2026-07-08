@@ -139,10 +139,11 @@ def format_signal_message(opp: dict) -> str:
     grade_emoji = {"A+": "🏆", "A": "⭐", "B": "👍", "C": "⚠️"}.get(grade, "")
     dir_emoji = "📈 LONG" if direction == "LONG" else "📉 SHORT"
     asset_tag = "🪙 KRİPTO" if opp["asset_type"] == "crypto" else "🇹🇷 BIST"
+    timeframe = opp.get("timeframe", "4H")
 
     msg = f"""🚨 <b>SMP SİNYAL</b> — {asset_tag} 🚨
 ━━━━━━━━━━━━━━━━━━━━━
-<b>{label}</b>  {dir_emoji}
+<b>{label}</b>  {dir_emoji}  |  {timeframe}
 Grade: {grade_emoji} <b>{grade}</b>  |  Skor: {score:.1f}/10
 
 💰 <b>GİRİŞ:</b>  {price:,.4f} {currency}
@@ -164,7 +165,14 @@ Grade: {grade_emoji} <b>{grade}</b>  |  Skor: {score:.1f}/10
 ━━━━━━━━━━━━━━━━━━━━━
 ⚖️ R/R Orani:  1:{rr:.1f}
 📊 RVOL: {rvol:.2f}x  |  RSI: {rsi:.0f}
-⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}
+⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+
+    if opp.get("ghost_bar_warning"):
+        msg += """
+⚠️ <b>DIKKAT:</b> Son mum anormal dusuk hacimli -- hayalet/yarim
+seans bari olabilir, sinyali dogrulamadan islem acmayin."""
+
+    msg += """
 ━━━━━━━━━━━━━━━━━━━━━
 ⚠️ Bu bir sinyal sistemidir.
 Kendi analizinizi de yapin."""
@@ -223,6 +231,12 @@ def scan_crypto():
                 print(f"  {coin}: sinyal yok")
                 continue
 
+            # Guvenlik kontrolu: son bar anormal dusuk hacimliyse (olasi
+            # hayalet/yarim seans bari) sinyali uyariyla isaretle
+            avg_vol_recent = df["volume"].iloc[-21:-1].mean()
+            last_vol = df["volume"].iloc[-1]
+            ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
+
             bull_score = sc["bull_score"].iloc[-1]
             bear_score = sc["bear_score"].iloc[-1]
             price = df["close"].iloc[-1]
@@ -249,7 +263,8 @@ def scan_crypto():
                 "price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
                 "stop_pct": stop_pct, "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
                 "rr": tp2_pct / stop_pct if stop_pct > 0 else 0,
-                "priority": p["priority"], "dedup_key": None,
+                "priority": p["priority"], "dedup_key": None, "timeframe": "4H",
+                "ghost_bar_warning": ghost_bar_warning,
             })
             print(f"  {coin}: {direction} sinyali (skor={score:.1f})")
 
@@ -295,6 +310,12 @@ def scan_bist():
             if not recent_buy and not recent_sell:
                 continue
 
+            # Guvenlik kontrolu: son bar anormal dusuk hacimliyse (olasi
+            # hayalet/yarim seans bari) sinyali uyariyla isaretle
+            avg_vol_recent = df["volume"].iloc[-21:-1].mean()
+            last_vol = df["volume"].iloc[-1]
+            ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
+
             bull_score = sc["bull_score"].iloc[-1]
             bear_score = sc["bear_score"].iloc[-1]
             price = df["close"].iloc[-1]
@@ -321,7 +342,8 @@ def scan_bist():
                 "price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
                 "stop_pct": stop_pct, "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
                 "rr": tp2_pct / stop_pct if stop_pct > 0 else 0,
-                "priority": 9, "dedup_key": None,
+                "priority": 9, "dedup_key": None, "timeframe": "4H",
+                "ghost_bar_warning": ghost_bar_warning,
             })
             print(f"  {ticker}: {direction} sinyali (skor={score:.1f})")
 
