@@ -432,14 +432,8 @@ def scan_crypto(crypto_state: dict):
             last_vol = df["volume"].iloc[-1]
             ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
 
-            bull_score = sc.loc[signal_bar, "bull_score"]
-            bear_score = sc.loc[signal_bar, "bear_score"]
-            price = df.loc[signal_bar, "close"]
-            stop_pct = ind.loc[signal_bar, "safe_stop_pct"]
-
-            score = bull_score if direction == "LONG" else bear_score
-
-            tp1_pct = stop_pct * 1.0
+            bull_score = sg.loc[signal_bar, "total_bull_score"]
+            bear_score = sg.loc[signal_bar, "total_bear_score"]
             tp2_pct = stop_pct * p["rr_ratio"]
             if direction == "LONG":
                 sl = price * (1 - stop_pct / 100)
@@ -523,8 +517,8 @@ def scan_bist(bist_state: dict):
             last_vol = df["volume"].iloc[-1]
             ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
 
-            bull_score = sc.loc[signal_bar, "bull_score"]
-            bear_score = sc.loc[signal_bar, "bear_score"]
+            bull_score = sg.loc[signal_bar, "total_bull_score"]
+            bear_score = sg.loc[signal_bar, "total_bear_score"]
             price = df.loc[signal_bar, "close"]
             stop_pct = ind.loc[signal_bar, "safe_stop_pct"]
 
