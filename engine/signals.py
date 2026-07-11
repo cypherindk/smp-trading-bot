@@ -33,7 +33,7 @@ def _self_htf_bias(ind):
 
 
 def calc_bull_bear_score(ind, htf_bias="auto", use_bb_filter=False,
-                         mtf=None, is_ltf=False):
+                         mtf=None, is_ltf=False, mtf_min_rvol=1.0):
     """
     htf_bias:
       "auto" (varsayilan) -> Pine'daki "HTF Filtresi: Grafik (bos)"
@@ -53,6 +53,18 @@ def calc_bull_bear_score(ind, htf_bias="auto", use_bb_filter=False,
          iki skora da +0.5 sabit bonus eklenir (Pine'da tam olarak
          boyle davraniyor cunku isLTF False oldugunda kosul dogrudan
          True'ya esitleniyor).
+
+    mtf_min_rvol: [YENİ] MTF modulu YAKLASIK bir yeniden-uygulama (bkz.
+         liquidity_mtf.py docstring) -- ince islem goren/dusuk hacimli
+         barlarda (RVOL bu esigin altinda) pivot/equal-level tespiti
+         gurultulu oluyor ve sahte "sweep" olaylari uretebiliyor
+         (ornek: EUPWR.IS, RVOL=0.83, MTF kapaliyken skor 7.0/trigger
+         yok, MTF aciliyken skor 8.0'a cikip A+ sinyali tetikliyordu --
+         TradingView'de hic gorunmeyen bir sinyaldi). Bu esigin
+         ALTINDAKI barlarda MTF modulunun tum ciktilari (recent_demand/
+         supply_bounce, mtf_score, mtf_ok) NOTR'e (mtf=None ile ayni
+         davranis) dusuruluyor. mtf_min_rvol=0 verirsen bu guvenlik
+         tamamen kapanir (eski davranis).
     """
     ema_bull_cross   = ind["ema_fast"] > ind["ema_mid"]
     ema_bear_cross   = ind["ema_fast"] < ind["ema_mid"]
@@ -107,6 +119,19 @@ def calc_bull_bear_score(ind, htf_bias="auto", use_bb_filter=False,
         mtf_score_bear = mtf["mtf_score_bear"].reindex(ind.index).fillna(0.0)
         mtf_ok_bull = mtf["mtf_ok_bull"].reindex(ind.index).fillna(True).astype(bool)
         mtf_ok_bear = mtf["mtf_ok_bear"].reindex(ind.index).fillna(True).astype(bool)
+
+        # [YENİ] Dusuk hacimli barlarda MTF'i notrle -- bkz. mtf_min_rvol
+        # docstring'i. mtf_ok_bull/bear FILTRE oldugu icin notr degeri
+        # True (engellemesin), bonus/tetik alanlari icin notr degeri
+        # False/0 (katki yapmasin).
+        if mtf_min_rvol and mtf_min_rvol > 0:
+            low_vol = ind["rvol"] < mtf_min_rvol
+            recent_demand_bounce = recent_demand_bounce & ~low_vol
+            recent_supply_bounce = recent_supply_bounce & ~low_vol
+            mtf_score_bull = mtf_score_bull.where(~low_vol, 0.0)
+            mtf_score_bear = mtf_score_bear.where(~low_vol, 0.0)
+            mtf_ok_bull = mtf_ok_bull | low_vol
+            mtf_ok_bear = mtf_ok_bear | low_vol
     else:
         recent_demand_bounce = pd.Series(False, index=ind.index)
         recent_supply_bounce = pd.Series(False, index=ind.index)
