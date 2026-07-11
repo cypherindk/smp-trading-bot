@@ -85,7 +85,12 @@ def run_backtest(df: pd.DataFrame,
             tp_stop=tp_long_pct,
             init_cash=initial_capital,
             fees=commission_pct / 100,
-            freq="1h",
+            freq="4h",  # [FIX] eskiden "1h" idi -- bu bot hep 4H calisiyor.
+                        # Yanlis freq, VectorBT'nin yillik periyot sayisini
+                        # (annualization factor) 4x fazla varsaymasina, bu
+                        # da Sharpe Ratio'nun (~2x, sqrt(4)) yapay sekilde
+                        # sisirilmis cikmasina neden oluyordu -- Optuna'nin
+                        # optimize ettigi ana metrik tam da bu deger.
             size=qty_per_trade,
             size_type="amount",
             upon_opposite_entry="Reverse",
@@ -133,13 +138,14 @@ def print_results(results: dict, label: str = "Backtest Sonuçları"):
 if __name__ == "__main__":
     import sys
     sys.path.append("..")
-    from data.fetcher import fetch_ohlcv
+    # [FIX] yfinance "4h" interval'ini desteklemez -- fetch_smart kullan
+    from telegram_bot import fetch_smart
     from engine.indicators import compute_all_indicators
     from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
     from engine.filters import apply_all_filters
-    
+
     print("📡 BTC-USD verisi çekiliyor (4H)...")
-    df  = fetch_ohlcv("BTC-USD", interval="4h", period="2y")
+    df = fetch_smart("BTC-USD", "4h", "2y")
     
     print("🧮 İndikatörler hesaplanıyor...")
     ind = compute_all_indicators(df, preset="Default")

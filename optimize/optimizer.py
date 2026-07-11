@@ -22,24 +22,41 @@ def single_objective(trial, df, ind_func, signal_func, filter_func, backtest_fun
     """
     Tek amaçlı Optuna objective.
     Optimize edilen metrik: Sharpe Ratio (getiri/risk dengesi en iyi gösterge)
+
+    [FIX] Eski parametre listesinde "rvol_thr" vardi ama hicbir yerde
+    KULLANILMIYORDU -- ind["rvol_ok"] hesaplaniyor, sonra generate_signals
+    hic bu kolonu okumuyor. Yani Optuna gecmiste bu parametreyi "optimize
+    ediyor gibi yaparak" bosuna 150 deneme harciyordu. Kaldirildi.
+
+    [YENİ] preset artik TUM Pine presetlerini kapsiyor (Scalping/Swing
+    de eklendi) ve grade_filter de optimize ediliyor -- kullanicinin
+    istegi: "TradingView'den bagimsiz, gecmiste en iyi ne ise o"
+    (yani artik preset=Aggressive'e sabitlenmiyor).
+
+    NOT: mtf (MTF Likidite Filtresi) bilerek None birakildi -- 2 yillik
+    backtest penceresinin cogunda yfinance'in 5dk/15dk verisi zaten yok
+    (~60 gunle sinirli), o yuzden optimizasyona dahil edilmedi. Canli
+    tarama (telegram_bot.py) MTF'i ayrica uyguluyor; bu optimize edilen
+    parametreler MTF'siz bir ortamda bulundu, MTF canlida ekstra bir
+    filtre/puan katkisi yapacak.
     """
     # ── Optimize edilecek parametreler ──
-    rvol_thr   = trial.suggest_float("rvol_thr", 1.2, 3.5, step=0.1)
     vsa_thr    = trial.suggest_float("vsa_thr", 0.5, 2.5, step=0.1)
     adr_mult   = trial.suggest_float("adr_mult", 1.0, 4.0, step=0.1)
     rr_ratio   = trial.suggest_float("rr_ratio", 1.2, 3.5, step=0.1)
     min_conf   = trial.suggest_int("min_conf", 1, 4)
-    eff_score  = trial.suggest_float("eff_score", 3.0, 8.0, step=0.5)
+    eff_score  = trial.suggest_float("eff_score", 2.0, 9.0, step=0.5)
     zombie_bars = trial.suggest_int("zombie_bars", 10, 40)
-    preset     = trial.suggest_categorical("preset", ["Default", "Aggressive", "Conservative"])
-    
+    preset     = trial.suggest_categorical(
+        "preset", ["Scalping", "Aggressive", "Default", "Conservative", "Swing"])
+    grade_filter = trial.suggest_categorical(
+        "grade_filter", ["All", "A+ and A", "A+ Only"])
+
     try:
-        # Indikatörleri preset ile hesapla
-        ind = ind_func(df, preset=preset)
-        
-        # RVOL eşiğini uygula (hacim filtresini sıkıştır)
-        ind["rvol_ok"] = ind["rvol"] > rvol_thr
-        
+        # Indikatörleri preset ile hesapla (timeframe_minutes=240: bu
+        # bot her zaman 4H calisiyor -> whale $ esigi de dogru hesaplanir)
+        ind = ind_func(df, preset=preset, timeframe_minutes=240)
+
         # VSA eşiğini parametre ile kullan
         from engine.indicators import calc_vsa_shield
         vsa_df = calc_vsa_shield(
@@ -48,44 +65,49 @@ def single_objective(trial, df, ind_func, signal_func, filter_func, backtest_fun
         )
         for col in ["vsa_bc", "vsa_ut", "vsa_sc", "vsa_spr", "vsa_dt"]:
             ind[col] = vsa_df[col]
-        
-        # Sinyaller
+
+        # Sinyaller (mtf=None -- yukaridaki NOT'a bak)
         from engine.signals import (calc_bull_bear_score, calc_triggers,
                                      generate_signals)
-        sc = calc_bull_bear_score(ind)
+        sc = calc_bull_bear_score(ind, mtf=None)
         tr = calc_triggers(ind, sc)
         sg = generate_signals(ind, sc, tr, preset=preset,
                               eff_score=eff_score, min_conf=min_conf,
+                              grade_filter=grade_filter,
                               use_vsa=True, is_scalp_mode=(preset == "Scalping"))
-        
+
         # Filtreler
         from engine.filters import apply_all_filters
         fs = apply_all_filters(ind, sg, use_cvd=use_cvd)
-        
+
         if fs["buy_signal"].sum() + fs["sell_signal"].sum() < 5:
             return -999  # Çok az sinyal — geçersiz
-        
+
         # Backtest
+        # [FIX] is_scalp_mode hic gecilmiyordu -> Zombi Kesici (zombie_bars)
+        # backtest_func icinde hep pasif kaliyordu, preset="Scalping" secilse
+        # bile. Artik generate_signals'a verilenle ayni deger kullaniliyor.
         results = backtest_func(
             df, ind, fs,
             adr_mult=adr_mult,
             rr_ratio=rr_ratio,
             zombie_bars=zombie_bars,
+            is_scalp_mode=(preset == "Scalping"),
         )
-        
+
         if results is None:
             return -999
-        
+
         sharpe = results["sharpe_ratio"]
         if np.isnan(sharpe) or np.isinf(sharpe):
             return -999
-        
+
         # Drawdown cezası (>30% drawdown'u cezalandır)
         dd = results["max_drawdown_pct"]
         dd_penalty = max(0, (dd - 30) * 0.5)
-        
+
         return sharpe - dd_penalty
-        
+
     except Exception as e:
         return -999
 
@@ -198,8 +220,9 @@ def validate_best_params(df: pd.DataFrame, best_params: dict) -> dict:
     print(f"\n🔬 Son validasyon ({len(test_df)} bar, hiç görülmemiş veri)...")
     
     p = best_params
-    ind = compute_all_indicators(test_df, preset=p.get("preset", "Default"))
-    
+    ind = compute_all_indicators(test_df, preset=p.get("preset", "Default"),
+                                 timeframe_minutes=240)
+
     # VSA parametresiyle yeniden hesapla
     vsa_df = calc_vsa_shield(
         test_df["high"], test_df["low"], test_df["open"],
@@ -208,13 +231,16 @@ def validate_best_params(df: pd.DataFrame, best_params: dict) -> dict:
     )
     for col in ["vsa_bc", "vsa_ut", "vsa_sc", "vsa_spr", "vsa_dt"]:
         ind[col] = vsa_df[col]
-    
-    sc = calc_bull_bear_score(ind)
+
+    # mtf=None -- single_objective ile ayni ortam (bkz. oradaki NOT)
+    sc = calc_bull_bear_score(ind, mtf=None)
     tr = calc_triggers(ind, sc)
     sg = generate_signals(ind, sc, tr,
                           preset=p.get("preset", "Default"),
                           eff_score=p.get("eff_score", 5.0),
-                          min_conf=p.get("min_conf", 2))
+                          min_conf=p.get("min_conf", 2),
+                          grade_filter=p.get("grade_filter", "All"),
+                          is_scalp_mode=(p.get("preset", "Default") == "Scalping"))
     fs = apply_all_filters(ind, sg)
     
     results = run_backtest(
@@ -222,6 +248,7 @@ def validate_best_params(df: pd.DataFrame, best_params: dict) -> dict:
         adr_mult=p.get("adr_mult", 1.5),
         rr_ratio=p.get("rr_ratio", 2.0),
         zombie_bars=p.get("zombie_bars", 20),
+        is_scalp_mode=(p.get("preset", "Default") == "Scalping"),
     )
     
     print_results(results, "VALIDASYON SONUCU (Out-of-Sample)")
@@ -231,10 +258,14 @@ def validate_best_params(df: pd.DataFrame, best_params: dict) -> dict:
 if __name__ == "__main__":
     import sys
     sys.path.append("..")
-    from data.fetcher import fetch_ohlcv
-    
+    # [FIX] yfinance "4h" interval'ini DESTEKLEMEZ -- eskiden burada
+    # dogrudan fetch_ohlcv(..., interval="4h", ...) cagriliyordu, bu da
+    # yfinance tarafinda hataya/bos veriye yol aciyordu. Canli botun
+    # kullandigi AYNI fetch_smart (1h->4h resample) fonksiyonu kullanildi.
+    from telegram_bot import fetch_smart
+
     print("📡 Veri çekiliyor...")
-    df = fetch_ohlcv("BTC-USD", interval="4h", period="2y")
-    
+    df = fetch_smart("BTC-USD", "4h", "2y")
+
     opt_results = run_optimization(df, n_trials=150, use_walk_forward=True)
     validate_best_params(df, opt_results["best_params"])

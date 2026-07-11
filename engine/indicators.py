@@ -79,6 +79,76 @@ def calc_obv(close, volume):
 # BÖLÜM 2: WHALE MOTORU (SMP V2.8.2)
 # ══════════════════════════════════════════════════════════════════
 
+def resolve_whale_eff_min(timeframe_minutes: float, auto: bool = True,
+                          manual_min_m: float = 5.0) -> float:
+    """
+    Pine "Otomatik TF Eşiği" (i_autoT) tablosunun esdegeri:
+      tf_s = timeframe_minutes * 60
+      effMin = tf_s<=60?0.5 : tf_s<=300?2.0 : tf_s<=900?5.0 :
+               tf_s<=1800?10.0 : tf_s<=3600?25.0 : tf_s<=14400?50.0 : 100.0
+
+    [FIX] Eskiden calc_whale_score hep sabit eff_min_m=2.0 (varsayilan
+    parametre) ile cagriliyordu. TradingView ekran goruntusunde
+    "Otomatik TF Eşiği" ACIK -- 4H grafikte (240 dk) gercek esik
+    $50M'dir, $2M degil. $2M ile whale onayi neredeyse HER ZAMAN True
+    donuyordu (25 kat daha dusuk esik) -- bu da hem whale confluence
+    puanini hem de trigger/skor hesaplarini gercekte olmasi gerekenden
+    cok daha kolay tetikleniyor hale getiriyordu.
+
+    auto=False verilirse (TradingView'de "Otomatik TF Eşiği" kapatilip
+    "Manuel Min İşlem ($M)" kullanilirsa) manual_min_m dogrudan doner.
+    """
+    if not auto:
+        return manual_min_m
+    tf_s = timeframe_minutes * 60.0
+    if tf_s <= 60:
+        return 0.5
+    if tf_s <= 300:
+        return 2.0
+    if tf_s <= 900:
+        return 5.0
+    if tf_s <= 1800:
+        return 10.0
+    if tf_s <= 3600:
+        return 25.0
+    if tf_s <= 14400:
+        return 50.0
+    return 100.0
+
+
+def calc_whale_recent(is_whale_buy, is_whale_sell, low, high, close, lookback=21):
+    """
+    Pine:
+      barsSinceWBuy = ta.barssince(isWhaleBuy)
+      lastWBuyLow   = ta.valuewhen(isWhaleBuy, low, 0)
+      wBuyRecent    = barsSinceWBuy <= 21 and close >= lastWBuyLow
+      (wSellRecent de ayna simetrik)
+
+    [FIX] Eskiden engine/signals.py icinde bu, sadece
+    "is_whale_buy.rolling(21).max()" (son 21 barda whale alimi oldu mu)
+    olarak yaklasik hesaplaniyordu -- "fiyat o whale barinin dibini
+    kirmadi mi" kosulu hic yoktu. Artik Pine ile birebir ayni.
+    """
+    idx = np.arange(len(close))
+
+    def _bars_since(cond):
+        last_true_idx = pd.Series(np.where(cond.values, idx, np.nan), index=cond.index).ffill()
+        return pd.Series(idx, index=cond.index) - last_true_idx
+
+    bars_since_buy = _bars_since(is_whale_buy)
+    bars_since_sell = _bars_since(is_whale_sell)
+    last_w_buy_low = low.where(is_whale_buy).ffill()
+    last_w_sell_high = high.where(is_whale_sell).ffill()
+
+    w_buy_recent = (bars_since_buy <= lookback) & (close >= last_w_buy_low)
+    w_sell_recent = (bars_since_sell <= lookback) & (close <= last_w_sell_high)
+
+    return pd.DataFrame({
+        "w_buy_recent": w_buy_recent.fillna(False).astype(bool),
+        "w_sell_recent": w_sell_recent.fillna(False).astype(bool),
+    })
+
+
 def calc_whale_score(high, low, open_, close, volume, rvol, mfi, obv, eff_min_m=2.0):
     dv = volume * close
     dv_m = dv / 1e6
@@ -317,7 +387,17 @@ def calc_zone_poc(high, low, close, volume, lookback=200):
 # BÖLÜM 10: ANA HESAPLAMA FONKSİYONU
 # ══════════════════════════════════════════════════════════════════
 
-def compute_all_indicators(df, adr_series=None, preset="Default"):
+def compute_all_indicators(df, adr_series=None, preset="Default",
+                           timeframe_minutes=240,
+                           whale_auto_tf=True, whale_manual_min_m=5.0):
+    """
+    [FIX] timeframe_minutes=240 (4H) varsayilan -- bu bot her zaman 4H
+    calisiyor. Baska bir TF'de kullanirsan bu degeri de degistirmen
+    lazim (Pine tarafinda "Otomatik TF Eşiği" grafigin kendi TF'sine
+    gore otomatik hesaplaniyor, burada elle veriliyor cunku Python
+    tarafinda "hangi TF'de calisiyoruz" bilgisi grafikten degil
+    fonksiyon parametresinden geliyor).
+    """
     presets = {
         "Scalping":     {"fast": 5,  "mid": 13, "slow": 34, "rsi": 8},
         "Aggressive":   {"fast": 8,  "mid": 18, "slow": 50, "rsi": 11},
@@ -347,9 +427,19 @@ def compute_all_indicators(df, adr_series=None, preset="Default"):
     out["mfi"]  = calc_mfi(df["high"], df["low"], df["close"], df["volume"])
 
     # Whale motoru
+    eff_min_m = resolve_whale_eff_min(timeframe_minutes, auto=whale_auto_tf,
+                                       manual_min_m=whale_manual_min_m)
     out = pd.concat([out, calc_whale_score(
         df["high"], df["low"], df["open"], df["close"],
-        df["volume"], out["rvol"], out["mfi"], out["obv"]
+        df["volume"], out["rvol"], out["mfi"], out["obv"],
+        eff_min_m=eff_min_m
+    )], axis=1)
+    out["whale_eff_min_m"] = eff_min_m
+
+    # [FIX] Pine-birebir wBuyRecent/wSellRecent (barssince + fiyat kosulu)
+    out = pd.concat([out, calc_whale_recent(
+        out["is_whale_buy"], out["is_whale_sell"],
+        df["low"], df["high"], df["close"]
     )], axis=1)
 
     # VSA zirhi

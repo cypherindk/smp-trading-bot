@@ -7,6 +7,13 @@ Not: Artik 4H zaman diliminde calisiyor (TradingView grafiginizle ayni
 zaman dilimi), gunluk degil. yfinance "4h" desteklemedigi icin 1h veri
 cekilip 4h'e resample ediliyor (telegram_bot.py'deki fetch_smart).
 
+[FIX] PRESET/EFF_SCORE/GRADE_FILTER, telegram_bot.py ile ayni sekilde
+TradingView BIST grafiginin gercek ayarlarina (Preset=Auto -> 4H'de
+"Aggressive", Grade Filtresi=A+ Only) eslendi. Eskiden "Default" +
+eff_score=5.0 + grade_filter=All kullaniliyordu, bu da bu script'in
+TradingView'de hic gorunmeyen sinyalleri "sinyal var" diye raporlamasina
+sebep oluyordu.
+
 Kullanim:
   python diagnose_history.py
   python diagnose_history.py AKBNK.IS ISCTR.IS GARAN.IS
@@ -18,12 +25,17 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from telegram_bot import fetch_smart
+from data.fetcher import fetch_ohlcv
 from engine.indicators import compute_all_indicators
 from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
 from engine.filters import apply_all_filters
+from engine.liquidity_mtf import fetch_mtf_frame
 
-PRESET = "Default"
-EFF_SCORE = 5.0
+USE_MTF = True  # telegram_bot.py'deki BIST_USE_MTF ile ayni mantik
+
+PRESET = "Aggressive"
+EFF_SCORE = 3.0
+GRADE_FILTER = "A+ Only"
 MIN_CONF = 2
 
 
@@ -33,11 +45,13 @@ def diagnose(ticker: str):
     print(f"{'='*60}")
 
     df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
-    ind = compute_all_indicators(df, preset=PRESET)
-    sc = calc_bull_bear_score(ind)
+    ind = compute_all_indicators(df, preset=PRESET, timeframe_minutes=240)
+    mtf_frame = fetch_mtf_frame(ticker, df, fetch_ohlcv) if USE_MTF else None
+    sc = calc_bull_bear_score(ind, mtf=mtf_frame)
     tr = calc_triggers(ind, sc)
     sg = generate_signals(ind, sc, tr, preset=PRESET,
-                           eff_score=EFF_SCORE, min_conf=MIN_CONF)
+                           eff_score=EFF_SCORE, min_conf=MIN_CONF,
+                           grade_filter=GRADE_FILTER)
     fs = apply_all_filters(ind, sg, use_cvd=True)
 
     buy_dates = df.index[fs["buy_signal"]].tolist()
