@@ -10,13 +10,40 @@ Degisiklikler (onceki versiyona gore):
   2) BIST100 hisseleri ayni taramaya eklendi — kullanicinin TradingView
      grafiginde SMP indikatorunu 4 saatlik (4sa) zaman diliminde
      kullandigi teyit edildi, bu yuzden gunluk (1d) degil 4h kullanildi.
-  3) State/dedup dosyasina artik gerek yok: kripto ile ayni mantik
-     (son 2 mumda sinyal var mi kontrolu) BIST icin de yeterli.
+  3) [DUZELTILDI] "State/dedup dosyasina artik gerek yok" onceki notu
+     YANLIŞTI. Tarama 4 saatte bir calisiyor, mum boyu da 4 saat --
+     "son 2 mumda sinyal var mi" kontrolu tek basina AYNI sinyali
+     ardisik taramalarda tekrar tekrar gonderiyordu. state/bist_state.json
+     (zaten repo'da varmis, gercek formatini kullaniciya sordum) ve YENI
+     state/crypto_state.json ile dedup geri eklendi -- bkz. asagida
+     "State / Dedup" bolumu. .github/workflows/scan.yml'nin artik
+     state/crypto_state.json'i da commit etmesi lazim (asagidaki
+     scan.yml ornegine bak).
+  4) [FIX] BIST preset/eff_score/grade_filter, TradingView tarafinda
+     "Preset: Auto" + 4H grafikte cozulen gercek deger olan "Aggressive"
+     (effScore=3) ve "Grade Filtresi: A+ Only" (skor>=8.0) ile eslendi.
+     Onceki "Default" + eff_score=5.0 + grade_filter=All (varsayilan)
+     TradingView ekraninda hic gorunmeyen B/A grade sinyalleri Telegram'a
+     gonderiyordu -- KORDS ornegindeki uyumsuzlugun ana sebebi buydu.
+  5) [FIX] recent_buy/recent_sell son 2 barda kontrol ediliyordu ama
+     fiyat/skor/RSI/RVOL her zaman SON bardan (iloc[-1]) okunuyordu.
+     Sinyal 1 bar once tetiklenmisse Telegram mesajindaki fiyat/skor
+     yanlis bardan geliyordu ve yon (LONG/SHORT) bile yanlis
+     etiketlenebiliyordu. Artik gercek tetik barindan okunuyor ve o
+     barin zaman damgasi mesaja ekleniyor (TradingView'de hangi muma
+     bakman gerektigini net gostermek icin).
+
+  NOT: Pine tarafindaki MTF Likidite Filtresi (i_useMTF, 5dk/15dk/1sa
+  liquidity-sweep tabanli mtfOkBull/mtfOkBear), Whale Onayi (i_useW,
+  confBull/confBear icine giren whale onayi) ve Alt TF Cooldown Kilidi
+  (ltfOkBull/ltfOkBear) bu Python kodunda hala birebir uygulanmiyor --
+  bunlarin karsiligi yok, tam parite icin ayri bir calisma gerekir.
 """
 
 import sys
 import os
 import time
+import json
 import requests
 from datetime import datetime
 
@@ -26,7 +53,63 @@ from data.fetcher import fetch_ohlcv
 from engine.indicators import compute_all_indicators
 from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
 from engine.filters import apply_all_filters
+from engine.liquidity_mtf import fetch_mtf_frame
 from bist100_tickers import BIST100_YF
+
+# [YENİ] Pine'daki "MTF Likidite Filtresi" (5dk/15dk/1sa equal-level +
+# sweep) esdegeri. Her sembol icin 3 EK yfinance istegi (5m/15m/1h)
+# gerektirir -- BIST'te 100 hisse x 4 istek (4h+5m+15m+1h) = ~400 istek/
+# tarama demektir, bu da taramayi ciddi yavaslatir ve yfinance rate-limit
+# riskini artirir. Cok yavas/hata aliyorsa BIST_USE_MTF=False yapip
+# sadece kripto icin acik birakabilirsin (3 coin x 4 istek = 12, sorun
+# degil).
+CRYPTO_USE_MTF = True
+BIST_USE_MTF = True
+
+# ── [YENİ] optimize/run_batch.py'nin ürettiği best_params.json ──
+# Bir sembol icin optimize edilmis parametre varsa AŞAĞIDAKİ COINS/BIST_*
+# sabitlerinin YERINE gecer (preset dahil -- kullanicinin istegi:
+# "TW ile eslesmesi degil, gecmiste en iyi performans" onemli).
+# Dosya yoksa veya bir sembolde yoksa, eski sabit degerlere (COINS /
+# BIST_PRESET vs.) sessizce geri duser.
+_OPT_PARAMS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "optimize", "best_params.json")
+
+
+def load_optimized_params(path=_OPT_PARAMS_PATH):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"  [optimize] {len(data)} sembol icin optimize edilmis parametre yuklendi.")
+        return data
+    except Exception as e:
+        print(f"  [optimize] best_params.json okunamadi, sabit degerlere donuluyor: {e}")
+        return {}
+
+
+OPTIMIZED_PARAMS = load_optimized_params()
+
+
+def resolve_symbol_config(symbol: str, default_cfg: dict) -> dict:
+    """
+    Optuna'dan gelen params varsa onu kullan (preset/eff_score/min_conf/
+    grade_filter/adr_mult/rr_ratio), eksik alanlari default_cfg'den
+    tamamla. Hic optimize edilmemis sembol icin default_cfg aynen doner.
+    """
+    entry = OPTIMIZED_PARAMS.get(symbol)
+    if not entry or "params" not in entry:
+        return default_cfg
+    p = entry["params"]
+    cfg = dict(default_cfg)
+    cfg["preset"] = p.get("preset", cfg.get("preset"))
+    cfg["eff_score"] = p.get("eff_score", cfg.get("eff_score"))
+    cfg["min_conf"] = p.get("min_conf", cfg.get("min_conf"))
+    cfg["grade_filter"] = p.get("grade_filter", cfg.get("grade_filter"))
+    cfg["adr_mult"] = p.get("adr_mult", cfg.get("adr_mult"))
+    cfg["rr_ratio"] = p.get("rr_ratio", cfg.get("rr_ratio"))
+    return cfg
 
 # ── Telegram ayarlari ──
 # ⚠️ Token'i GitHub Secrets'tan okuyun, koda hardcode ETMEYIN.
@@ -36,31 +119,56 @@ CHAT_ID = os.environ.get("CHAT_ID")
 if not BOT_TOKEN or not CHAT_ID:
     print("UYARI: BOT_TOKEN veya CHAT_ID environment variable eksik.")
 
-# ── Kripto parametreleri (mevcut, degismedi) ──
+# ── Kripto parametreleri (mevcut, degismedi — TradingView'deki her coin
+#    grafiginin Preset/Grade Filtresi ayarini da ayrica dogrulaman lazim,
+#    bu dosya sadece BIST icin dogrulanan ayarlarla guncellendi) ──
 COINS = {
+    # [FIX] Preset/eff_score/min_conf/grade_filter artik BIST ile ayni
+    # (TW'de Auto->Aggressive, Grade Filtresi=A+ Only). "Piyasa Turu"
+    # (Kripto/Hisse) Pine tarafinda SADECE ayri bir gorsel VAH/VAL
+    # breakout etiketini (dyn_brk_rvol, "Roket/Selale") etkiliyor --
+    # LONG/SHORT ana sinyal motoruyla ilgisi yok, Python'da zaten
+    # implement edilmedi. adr_mult/rr_ratio (risk yonetimi) coin'e
+    # ozel kaldi -- bunlar indikator ayari degil, senin backtest'le
+    # ayarladigin pozisyon buyuklugu/RR parametreleri, dokunmadim.
     "BTC-USD": {
-        "preset": "Default", "eff_score": 5.0, "min_conf": 2,
+        "preset": "Aggressive", "eff_score": 3.0, "min_conf": 2,
+        "grade_filter": "A+ Only",
         "adr_mult": 1.5, "rr_ratio": 2.0, "priority": 1,
         "symbol": "BTC/USDT",
     },
     "ETH-USD": {
-        "preset": "Conservative", "eff_score": 4.5, "min_conf": 1,
+        "preset": "Aggressive", "eff_score": 3.0, "min_conf": 2,
+        "grade_filter": "A+ Only",
         "adr_mult": 2.8, "rr_ratio": 3.5, "priority": 2,
         "symbol": "ETH/USDT",
     },
     "SOL-USD": {
-        "preset": "Default", "eff_score": 7.0, "min_conf": 1,
+        "preset": "Aggressive", "eff_score": 3.0, "min_conf": 2,
+        "grade_filter": "A+ Only",
         "adr_mult": 1.9, "rr_ratio": 1.8, "priority": 3,
         "symbol": "SOL/USDT",
     },
 }
 
-# ── BIST icin ortak parametreler (hisse bazli ayri optimize edilmedi) ──
-BIST_PRESET = "Default"
-BIST_EFF_SCORE = 5.0
+
+# ── BIST icin ortak parametreler ──
+# TradingView ekran goruntusu: Preset=Auto, HTF Filtresi=Grafik(bos=mevcut),
+# Grade Filtresi=A+ Only, C-Grade Sinyalleri Gizle=acik, Min Onay Sayisi=2.
+# Pine "Auto" presetinin 4H grafikte cozdugu gercek deger "Aggressive"dir
+# (tfMin=240 -> "Aggressive"), "Default" DEGIL. effScore de Aggressive icin
+# sabit 3'tur -- "Min Confluence Skoru (Custom)=5" alani sadece
+# Preset="Custom" secilirse kullanilir, Auto modunda devre disidir.
+BIST_PRESET = "Aggressive"
+BIST_EFF_SCORE = 3.0
+BIST_GRADE_FILTER = "A+ Only"
 BIST_MIN_CONF = 2
 BIST_RR_RATIO = 2.0
-BIST_REQUEST_DELAY = 0.6  # ardisik yfinance istekleri arasi bekleme
+BIST_REQUEST_DELAY = 1.0  # ardisik yfinance istekleri arasi bekleme
+                           # (MTF modulu her hisse icin 3 ek istek daha
+                           # yaptigi icin eskisinden (0.6) biraz yuksek
+                           # tutuldu -- BIST_USE_MTF=False ise 0.6'ya
+                           # dusurebilirsin)
 WHALE_SCORE_THRESHOLD = 80  # sadece bu skor ve ustundeki whale alert'ler gonderilir
 
 
@@ -140,6 +248,8 @@ def format_signal_message(opp: dict) -> str:
     dir_emoji = "📈 LONG" if direction == "LONG" else "📉 SHORT"
     asset_tag = "🪙 KRİPTO" if opp["asset_type"] == "crypto" else "🇹🇷 BIST"
     timeframe = opp.get("timeframe", "4H")
+    signal_time = opp.get("signal_time")
+    signal_time_str = signal_time.strftime('%d.%m.%Y %H:%M') if signal_time is not None else "?"
 
     msg = f"""🚨 <b>SMP SİNYAL</b> — {asset_tag} 🚨
 ━━━━━━━━━━━━━━━━━━━━━
@@ -165,7 +275,8 @@ Grade: {grade_emoji} <b>{grade}</b>  |  Skor: {score:.1f}/10
 ━━━━━━━━━━━━━━━━━━━━━
 ⚖️ R/R Orani:  1:{rr:.1f}
 📊 RVOL: {rvol:.2f}x  |  RSI: {rsi:.0f}
-⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+🕓 Sinyal Muma:  {signal_time_str}  (TW'de bu muma bak)
+⏰ Gonderim: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
 
     if opp.get("ghost_bar_warning"):
         msg += """
@@ -194,23 +305,104 @@ Bu, ana SMP sinyalinden bağımsız bir para akışı uyarısıdır.
 Sadece takip listesi amaçlıdır."""
 
 
+# ───────────────────────── Ortak: gercek tetik barini bul ─────────────────────────
+
+def _resolve_signal_bar(fs, lookback=2):
+    """
+    fs["buy_signal"] / fs["sell_signal"] icinde son `lookback` barda
+    True olan var mi bak, varsa GERCEK tetik barinin index'ini ve
+    yonunu dondur. Ikisi de varsa daha yeni olani sec.
+
+    Onceki koddaki hata: sinyal 1 bar once tetiklenmis olsa bile fiyat/
+    skor hep en son bardan (iloc[-1]) okunuyordu -- bu yuzden Telegram
+    mesaji TradingView'deki gercek sinyal barindan farkli bir fiyat/
+    zaman gosterebiliyordu.
+    """
+    buy_recent = fs["buy_signal"].iloc[-lookback:]
+    sell_recent = fs["sell_signal"].iloc[-lookback:]
+
+    buy_idx = buy_recent[buy_recent].index[-1] if buy_recent.any() else None
+    sell_idx = sell_recent[sell_recent].index[-1] if sell_recent.any() else None
+
+    if buy_idx is None and sell_idx is None:
+        return None, None
+    if buy_idx is not None and sell_idx is not None:
+        if buy_idx >= sell_idx:
+            return buy_idx, "LONG"
+        return sell_idx, "SHORT"
+    if buy_idx is not None:
+        return buy_idx, "LONG"
+    return sell_idx, "SHORT"
+
+
+# ───────────────────────── [YENİ] State / Dedup ─────────────────────────
+# [FIX] Tarama 4 saatte bir calisiyor, mum boyu da 4 saat -- yani
+# _resolve_signal_bar()'in "son 2 mum" penceresi, AYNI sinyal barinin
+# 2 ardisik taramada da "recent" gorunmesi demek. State dosyasi olmadan
+# ayni sinyal 2 kez (bazen "hayalet bar" filtrelemesi/tatil bosluklari
+# yuzunden daha da fazla) Telegram'a gidiyordu. Eskiden burada
+# "state dosyasina gerek yok" diye YANLIS bir varsayimla bu tamamen
+# kaldirilmisti -- state/bist_state.json'da gordugum gercek format
+# ("TICKER:YON": "YYYY-MM-DD") esas alinarak geri eklendi, kripto icin
+# de ayni mantikla state/crypto_state.json eklendi (workflow'da bu da
+# commit edilmeli, bkz. .github/workflows/scan.yml).
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
+BIST_STATE_PATH = os.path.join(STATE_DIR, "bist_state.json")
+CRYPTO_STATE_PATH = os.path.join(STATE_DIR, "crypto_state.json")
+
+
+def load_state(path: str) -> dict:
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"  [state] {path} okunamadi, bos state ile devam: {e}")
+    return {}
+
+
+def save_state(path: str, state: dict):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def already_notified(state: dict, label: str, direction: str, signal_bar) -> bool:
+    """
+    Ayni ticker+yon icin, ayni sinyal barinin tarihi daha once
+    bildirildiyse True doner (bar degismedigi surece tekrar gonderme).
+    """
+    key = f"{label}:{direction}"
+    sig_date = signal_bar.strftime("%Y-%m-%d")
+    return state.get(key) == sig_date
+
+
+def mark_notified(state: dict, label: str, direction: str, signal_bar):
+    key = f"{label}:{direction}"
+    state[key] = signal_bar.strftime("%Y-%m-%d")
+
+
 # ───────────────────────── Tarama mantigi ─────────────────────────
 
-def scan_crypto():
+def scan_crypto(crypto_state: dict):
     opportunities = []
     whale_events = []
     for coin, p in COINS.items():
+        p = resolve_symbol_config(coin, p)
         try:
             df = fetch_smart(coin, "4h", "60d")
             if len(df) < 60:
                 print(f"  {coin}: yetersiz veri ({len(df)} bar)")
                 continue
 
-            ind = compute_all_indicators(df, preset=p["preset"])
-            sc = calc_bull_bear_score(ind)
+            ind = compute_all_indicators(df, preset=p["preset"], timeframe_minutes=240)
+
+            mtf_frame = fetch_mtf_frame(coin, df, fetch_ohlcv) if CRYPTO_USE_MTF else None
+            sc = calc_bull_bear_score(ind, mtf=mtf_frame)
             tr = calc_triggers(ind, sc)
             sg = generate_signals(ind, sc, tr, preset=p["preset"],
-                                   eff_score=p["eff_score"], min_conf=p["min_conf"])
+                                   eff_score=p["eff_score"], min_conf=p["min_conf"],
+                                   grade_filter=p.get("grade_filter", "All"))
             fs = apply_all_filters(ind, sg, use_cvd=True)
 
             # Whale alert (ana sinyalden bagimsiz, sadece son bar kontrol edilir,
@@ -225,10 +417,13 @@ def scan_crypto():
                     "price": df["close"].iloc[-1],
                 })
 
-            recent_buy = fs["buy_signal"].iloc[-2:].any()
-            recent_sell = fs["sell_signal"].iloc[-2:].any()
-            if not recent_buy and not recent_sell:
+            signal_bar, direction = _resolve_signal_bar(fs)
+            if signal_bar is None:
                 print(f"  {coin}: sinyal yok")
+                continue
+
+            if already_notified(crypto_state, coin, direction, signal_bar):
+                print(f"  {coin}: {direction} zaten bildirildi (bar={signal_bar.date()}), atlaniyor")
                 continue
 
             # Guvenlik kontrolu: son bar anormal dusuk hacimliyse (olasi
@@ -237,12 +432,11 @@ def scan_crypto():
             last_vol = df["volume"].iloc[-1]
             ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
 
-            bull_score = sc["bull_score"].iloc[-1]
-            bear_score = sc["bear_score"].iloc[-1]
-            price = df["close"].iloc[-1]
-            stop_pct = ind["safe_stop_pct"].iloc[-1]
+            bull_score = sc.loc[signal_bar, "bull_score"]
+            bear_score = sc.loc[signal_bar, "bear_score"]
+            price = df.loc[signal_bar, "close"]
+            stop_pct = ind.loc[signal_bar, "safe_stop_pct"]
 
-            direction = "LONG" if (recent_buy and bull_score >= bear_score) else "SHORT"
             score = bull_score if direction == "LONG" else bear_score
 
             tp1_pct = stop_pct * 1.0
@@ -259,14 +453,15 @@ def scan_crypto():
             opportunities.append({
                 "asset_type": "crypto", "label": p["symbol"], "currency": "USD",
                 "direction": direction, "score": score, "grade": calc_grade(score),
-                "rvol": ind["rvol"].iloc[-1], "rsi": ind["rsi"].iloc[-1],
+                "rvol": ind.loc[signal_bar, "rvol"], "rsi": ind.loc[signal_bar, "rsi"],
                 "price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
                 "stop_pct": stop_pct, "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
                 "rr": tp2_pct / stop_pct if stop_pct > 0 else 0,
-                "priority": p["priority"], "dedup_key": None, "timeframe": "4H",
+                "priority": p["priority"], "dedup_key": coin, "timeframe": "4H",
                 "ghost_bar_warning": ghost_bar_warning,
+                "signal_time": signal_bar,
             })
-            print(f"  {coin}: {direction} sinyali (skor={score:.1f})")
+            print(f"  {coin}: {direction} sinyali (skor={score:.1f}, bar={signal_bar})")
 
         except Exception as e:
             print(f"  {coin}: hata — {e}")
@@ -274,7 +469,7 @@ def scan_crypto():
     return opportunities, whale_events
 
 
-def scan_bist():
+def scan_bist(bist_state: dict):
     opportunities = []
     whale_events = []
     for ticker in BIST100_YF:
@@ -284,11 +479,20 @@ def scan_bist():
                 print(f"  {ticker}: yetersiz veri ({len(df)} bar)")
                 continue
 
-            ind = compute_all_indicators(df, preset=BIST_PRESET)
-            sc = calc_bull_bear_score(ind)
+            cfg = resolve_symbol_config(ticker, {
+                "preset": BIST_PRESET, "eff_score": BIST_EFF_SCORE,
+                "min_conf": BIST_MIN_CONF, "grade_filter": BIST_GRADE_FILTER,
+                "adr_mult": None, "rr_ratio": BIST_RR_RATIO,
+            })
+
+            ind = compute_all_indicators(df, preset=cfg["preset"], timeframe_minutes=240)
+
+            mtf_frame = fetch_mtf_frame(ticker, df, fetch_ohlcv) if BIST_USE_MTF else None
+            sc = calc_bull_bear_score(ind, mtf=mtf_frame)
             tr = calc_triggers(ind, sc)
-            sg = generate_signals(ind, sc, tr, preset=BIST_PRESET,
-                                   eff_score=BIST_EFF_SCORE, min_conf=BIST_MIN_CONF)
+            sg = generate_signals(ind, sc, tr, preset=cfg["preset"],
+                                   eff_score=cfg["eff_score"], min_conf=cfg["min_conf"],
+                                   grade_filter=cfg["grade_filter"])
             fs = apply_all_filters(ind, sg, use_cvd=True)
 
             label = ticker.replace(".IS", "")
@@ -305,9 +509,12 @@ def scan_bist():
                     "price": df["close"].iloc[-1],
                 })
 
-            recent_buy = fs["buy_signal"].iloc[-2:].any()
-            recent_sell = fs["sell_signal"].iloc[-2:].any()
-            if not recent_buy and not recent_sell:
+            signal_bar, direction = _resolve_signal_bar(fs)
+            if signal_bar is None:
+                continue
+
+            if already_notified(bist_state, label, direction, signal_bar):
+                print(f"  {ticker}: {direction} zaten bildirildi (bar={signal_bar.date()}), atlaniyor")
                 continue
 
             # Guvenlik kontrolu: son bar anormal dusuk hacimliyse (olasi
@@ -316,36 +523,36 @@ def scan_bist():
             last_vol = df["volume"].iloc[-1]
             ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
 
-            bull_score = sc["bull_score"].iloc[-1]
-            bear_score = sc["bear_score"].iloc[-1]
-            price = df["close"].iloc[-1]
-            stop_pct = ind["safe_stop_pct"].iloc[-1]
+            bull_score = sc.loc[signal_bar, "bull_score"]
+            bear_score = sc.loc[signal_bar, "bear_score"]
+            price = df.loc[signal_bar, "close"]
+            stop_pct = ind.loc[signal_bar, "safe_stop_pct"]
 
-            direction = "LONG" if (recent_buy and bull_score >= bear_score) else "SHORT"
-
+            rr_ratio = cfg["rr_ratio"]
             score = bull_score if direction == "LONG" else bear_score
             tp1_pct = stop_pct * 1.0
-            tp2_pct = stop_pct * BIST_RR_RATIO
+            tp2_pct = stop_pct * rr_ratio
             if direction == "LONG":
                 sl = price * (1 - stop_pct / 100)
                 tp1 = price * (1 + tp1_pct / 100)
-                tp2 = price * (1 + tp2_pct / 100) if BIST_RR_RATIO > 1.5 else None
+                tp2 = price * (1 + tp2_pct / 100) if rr_ratio > 1.5 else None
             else:
                 sl = price * (1 + stop_pct / 100)
                 tp1 = price * (1 - tp1_pct / 100)
-                tp2 = price * (1 - tp2_pct / 100) if BIST_RR_RATIO > 1.5 else None
+                tp2 = price * (1 - tp2_pct / 100) if rr_ratio > 1.5 else None
 
             opportunities.append({
                 "asset_type": "bist", "label": label, "currency": "TRY",
                 "direction": direction, "score": score, "grade": calc_grade(score),
-                "rvol": ind["rvol"].iloc[-1], "rsi": ind["rsi"].iloc[-1],
+                "rvol": ind.loc[signal_bar, "rvol"], "rsi": ind.loc[signal_bar, "rsi"],
                 "price": price, "sl": sl, "tp1": tp1, "tp2": tp2,
                 "stop_pct": stop_pct, "tp1_pct": tp1_pct, "tp2_pct": tp2_pct,
                 "rr": tp2_pct / stop_pct if stop_pct > 0 else 0,
-                "priority": 9, "dedup_key": None, "timeframe": "4H",
+                "priority": 9, "dedup_key": label, "timeframe": "4H",
                 "ghost_bar_warning": ghost_bar_warning,
+                "signal_time": signal_bar,
             })
-            print(f"  {ticker}: {direction} sinyali (skor={score:.1f})")
+            print(f"  {ticker}: {direction} sinyali (skor={score:.1f}, bar={signal_bar})")
 
         except Exception as e:
             print(f"  {ticker}: hata — {e}")
@@ -359,8 +566,11 @@ def scan_and_notify():
     print(f"\n[{datetime.now().strftime('%H:%M')}] SMP Tarama basladi "
           f"(3 kripto + {len(BIST100_YF)} BIST hissesi)...")
 
-    crypto_opps, crypto_whales = scan_crypto()
-    bist_opps, bist_whales = scan_bist()
+    crypto_state = load_state(CRYPTO_STATE_PATH)
+    bist_state = load_state(BIST_STATE_PATH)
+
+    crypto_opps, crypto_whales = scan_crypto(crypto_state)
+    bist_opps, bist_whales = scan_bist(bist_state)
 
     opportunities = crypto_opps + bist_opps
     whale_events = crypto_whales + bist_whales
@@ -371,9 +581,18 @@ def scan_and_notify():
             msg = format_signal_message(opp)
             ok = send_message(msg)
             print(f"  {opp['label']} mesaji {'gonderildi' if ok else 'gonderilemedi'}")
+            if ok:
+                # [FIX] Basarili gonderimden SONRA isaretle -- Telegram
+                # hata verirse (ag/limit vb.) bir sonraki taramada tekrar
+                # denensin, sessizce "gonderildi" sayilmasin.
+                state = crypto_state if opp["asset_type"] == "crypto" else bist_state
+                mark_notified(state, opp["dedup_key"], opp["direction"], opp["signal_time"])
             time.sleep(1)
     else:
         print("  Aktif sinyal yok.")
+
+    save_state(CRYPTO_STATE_PATH, crypto_state)
+    save_state(BIST_STATE_PATH, bist_state)
 
     if whale_events:
         whale_events.sort(key=lambda x: -x["whale_score"])

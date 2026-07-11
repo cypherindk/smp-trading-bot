@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # state/bist_state.json dosyasini geri commit'lemek icin gerekli
+  contents: write   # state/*.json dosyalarini geri commit'lemek icin gerekli
 
 jobs:
   smp_scan:
@@ -29,10 +29,15 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python telegram_bot.py scan
 
-      - name: State dosyasini commit'le (dedup hafizasi)
+      - name: State dosyalarini commit'le (dedup hafizasi)
         run: |
           git config user.name "smp-bot"
           git config user.email "smp-bot@users.noreply.github.com"
-          git add state/bist_state.json || true
-          git diff --cached --quiet || git commit -m "chore: update BIST notification state [skip ci]"
+          # [FIX] eskiden sadece bist_state.json commit ediliyordu --
+          # crypto_state.json artik telegram_bot.py tarafindan da
+          # yaziliyor, o da commit edilmezse GitHub Actions runner'i her
+          # calistiginda sifirdan basliyor (dosya sistemi ephemeral) ve
+          # kripto tarafinda dedup hic KALICI olmuyordu.
+          git add state/bist_state.json state/crypto_state.json || true
+          git diff --cached --quiet || git commit -m "chore: update signal state [skip ci]"
           git push || true
