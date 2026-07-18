@@ -54,6 +54,7 @@ from engine.indicators import compute_all_indicators
 from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
 from engine.filters import apply_all_filters
 from engine.liquidity_mtf import fetch_mtf_frame
+from engine.smart_money_flow import calc_smart_money_droplet
 from bist100_tickers import BIST100_YF
 
 # [YENİ] Pine'daki "MTF Likidite Filtresi" (5dk/15dk/1sa equal-level +
@@ -305,6 +306,29 @@ Bu, ana SMP sinyalinden bağımsız bir para akışı uyarısıdır.
 Sadece takip listesi amaçlıdır."""
 
 
+def format_droplet_message(d: dict) -> str:
+    """
+    [YENİ] Pine'daki 💧 "Smart Money Flow" (Öncül Para Girişi) etiketi
+    icin bildirim. Sadece BULLISH (Pine'da ayı versiyonu yok, bkz.
+    engine/smart_money_flow.py). Ana LONG/SHORT sinyalinden ve whale
+    alert'ten TAMAMEN bagimsiz, ayri bir olay.
+    """
+    asset_tag = "🪙 KRİPTO" if d["asset_type"] == "crypto" else "🇹🇷 BIST"
+    signal_time_str = d["signal_time"].strftime('%d.%m.%Y %H:%M')
+    return f"""💧 <b>SMART MONEY FLOW</b> — {asset_tag} 💧
+━━━━━━━━━━━━━━━━━━━━━
+<b>{d['label']}</b>
+Fiyat düşerken CVD/MFI güçleniyor -- olası öncül para girişi.
+
+Fiyat: {d['price']:,.4f} {d['currency']}
+RVOL: {d['rvol']:.2f}x
+🕓 Sinyal Muma: {signal_time_str}  (TW'de bu muma bak)
+⏰ Gönderim: {datetime.now().strftime('%d.%m.%Y %H:%M')}
+━━━━━━━━━━━━━━━━━━━━━
+Bu, ana LONG/SHORT sinyalinden ve whale alert'ten bağımsız,
+öncül bir gizli-diverjans uyarısıdır. Kendi analizinizi yapın."""
+
+
 # ───────────────────────── Ortak: gercek tetik barini bul ─────────────────────────
 
 def _resolve_signal_bar(fs, lookback=2):
@@ -387,6 +411,7 @@ def mark_notified(state: dict, label: str, direction: str, signal_bar):
 def scan_crypto(crypto_state: dict):
     opportunities = []
     whale_events = []
+    droplet_events = []
     for coin, p in COINS.items():
         p = resolve_symbol_config(coin, p)
         try:
@@ -415,6 +440,18 @@ def scan_crypto(crypto_state: dict):
                     "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
+                })
+
+            # [YENİ] 💧 Smart Money Flow damlasi (ana LONG/SHORT sinyalinden
+            # BAGIMSIZ, sadece son bar kontrol edilir)
+            droplet = calc_smart_money_droplet(ind)
+            droplet_bar = ind.index[-1]
+            if droplet["smart_money_droplet"].iloc[-1] and not already_notified(
+                    crypto_state, coin, "DROPLET", droplet_bar):
+                droplet_events.append({
+                    "asset_type": "crypto", "label": p["symbol"], "currency": "USD",
+                    "price": df["close"].iloc[-1], "rvol": ind["rvol"].iloc[-1],
+                    "signal_time": droplet_bar, "dedup_key": coin,
                 })
 
             signal_bar, direction = _resolve_signal_bar(fs)
@@ -460,12 +497,13 @@ def scan_crypto(crypto_state: dict):
         except Exception as e:
             print(f"  {coin}: hata — {e}")
 
-    return opportunities, whale_events
+    return opportunities, whale_events, droplet_events
 
 
 def scan_bist(bist_state: dict):
     opportunities = []
     whale_events = []
+    droplet_events = []
     for ticker in BIST100_YF:
         try:
             df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
@@ -501,6 +539,18 @@ def scan_bist(bist_state: dict):
                     "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
+                })
+
+            # [YENİ] 💧 Smart Money Flow damlasi (ana LONG/SHORT sinyalinden
+            # BAGIMSIZ, sadece son bar kontrol edilir)
+            droplet = calc_smart_money_droplet(ind)
+            droplet_bar = ind.index[-1]
+            if droplet["smart_money_droplet"].iloc[-1] and not already_notified(
+                    bist_state, label, "DROPLET", droplet_bar):
+                droplet_events.append({
+                    "asset_type": "bist", "label": label, "currency": "TRY",
+                    "price": df["close"].iloc[-1], "rvol": ind["rvol"].iloc[-1],
+                    "signal_time": droplet_bar, "dedup_key": label,
                 })
 
             signal_bar, direction = _resolve_signal_bar(fs)
@@ -553,7 +603,7 @@ def scan_bist(bist_state: dict):
 
         time.sleep(BIST_REQUEST_DELAY)
 
-    return opportunities, whale_events
+    return opportunities, whale_events, droplet_events
 
 
 def scan_and_notify():
@@ -563,11 +613,12 @@ def scan_and_notify():
     crypto_state = load_state(CRYPTO_STATE_PATH)
     bist_state = load_state(BIST_STATE_PATH)
 
-    crypto_opps, crypto_whales = scan_crypto(crypto_state)
-    bist_opps, bist_whales = scan_bist(bist_state)
+    crypto_opps, crypto_whales, crypto_droplets = scan_crypto(crypto_state)
+    bist_opps, bist_whales, bist_droplets = scan_bist(bist_state)
 
     opportunities = crypto_opps + bist_opps
     whale_events = crypto_whales + bist_whales
+    droplet_events = crypto_droplets + bist_droplets
 
     if opportunities:
         opportunities.sort(key=lambda x: (x["priority"], -x["score"]))
@@ -585,9 +636,6 @@ def scan_and_notify():
     else:
         print("  Aktif sinyal yok.")
 
-    save_state(CRYPTO_STATE_PATH, crypto_state)
-    save_state(BIST_STATE_PATH, bist_state)
-
     if whale_events:
         whale_events.sort(key=lambda x: -x["whale_score"])
         for w in whale_events:
@@ -598,7 +646,23 @@ def scan_and_notify():
     else:
         print("  Whale alert yok.")
 
-    return len(opportunities) + len(whale_events)
+    # [YENİ] 💧 Smart Money Flow damla bildirimleri
+    if droplet_events:
+        for d in droplet_events:
+            msg = format_droplet_message(d)
+            ok = send_message(msg)
+            print(f"  {d['label']} damla (💧) alert {'gonderildi' if ok else 'gonderilemedi'}")
+            if ok:
+                state = crypto_state if d["asset_type"] == "crypto" else bist_state
+                mark_notified(state, d["dedup_key"], "DROPLET", d["signal_time"])
+            time.sleep(1)
+    else:
+        print("  Damla (💧) alert yok.")
+
+    save_state(CRYPTO_STATE_PATH, crypto_state)
+    save_state(BIST_STATE_PATH, bist_state)
+
+    return len(opportunities) + len(whale_events) + len(droplet_events)
 
 
 def send_test_message():
