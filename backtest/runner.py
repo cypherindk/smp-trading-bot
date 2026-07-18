@@ -43,8 +43,20 @@ def run_backtest(df: pd.DataFrame,
     sl_short_pct = stop_pct          # short: fiyatın üstünde
     
     # ── TAKE PROFIT hesapla (R:R oranına göre) ──
-    tp_long_pct  = stop_pct * rr_ratio
-    tp_short_pct = stop_pct * rr_ratio
+    # [FIX] Telegram mesaji kullaniciya "TP1'de yarisini kapat + kalanla
+    # TP2'ye git" diyor, ama burada TEK bir TP (eskiden dogrudan TP2
+    # mesafesi, stop_pct*rr_ratio) simule ediliyordu -- yani Optuna'nin
+    # optimize ettigi backtest, gercekte onerilen iki-asamali cikisi hic
+    # test etmiyordu. Gercek partial-exit (50% TP1 + 50% TP2) VectorBT'de
+    # ayri bir emir seti gerektirir (bu surumde yok); onun yerine TP1 ve
+    # TP2 mesafesinin ORTALAMASI kullanilarak iki-asamali cikisin
+    # BEKLENEN (blended) sonucuna daha yakin, daha durust bir yaklasik
+    # deger hesaplaniyor. NOT: gercek partial-exit'ten yine de farkli
+    # olabilir -- birebir degil, sadece eskisinden daha az yanlis.
+    tp1_pct = stop_pct * 1.0
+    tp2_pct = stop_pct * rr_ratio
+    tp_long_pct  = (tp1_pct + tp2_pct) / 2.0
+    tp_short_pct = (tp1_pct + tp2_pct) / 2.0
     
     # ── ZOMBI KESİCİ için exit sinyalleri ──
     # Giriş barından zombie_bars sonra kapat
@@ -72,6 +84,20 @@ def run_backtest(df: pd.DataFrame,
     risk_amount   = initial_capital * (risk_pct / 100)
     qty_per_trade = risk_amount / (df["close"] * stop_pct.clip(lower=0.001))
     qty_per_trade = qty_per_trade.clip(lower=0.0001)
+
+    # [FIX] Kimi K3'un Pine'da buldugu ayni sorun burada da vardi: ust
+    # sinir yoktu. Stop mesafesi cok dar geldiginde (dusuk volatilite
+    # bari), qty asiri buyuyup kaldiracsiz sermayenin kat kat uzerinde
+    # nominal pozisyon acilmis gibi backtest ediliyordu. Kaldiracsiz
+    # tavan: sermayenin tamami (initial_capital) ile alinabilecek max
+    # miktar. NOT: bu, gercek/degisen equity'yi degil SABIT
+    # initial_capital'i baz alan basit/muhafazakar bir tavandir --
+    # VectorBT'nin vektorize from_signals API'si equity'yi trade-by-trade
+    # izleyip dinamik boyutlandirmayi (Pine'daki strategy.equity gibi)
+    # kolayca desteklemiyor, bu yuzden en azindan "tek islemde sermayenin
+    # katlari kadar pozisyon" riskini kapatan bu basit tavan eklendi.
+    max_qty_no_leverage = initial_capital / df["close"]
+    qty_per_trade = qty_per_trade.clip(upper=max_qty_no_leverage)
     
     # VectorBT Portfolio
     try:
