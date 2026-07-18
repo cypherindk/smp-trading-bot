@@ -30,6 +30,7 @@ from engine.indicators import compute_all_indicators
 from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
 from engine.filters import apply_all_filters
 from engine.liquidity_mtf import fetch_mtf_frame
+from engine.smart_money_flow import calc_smart_money_droplet
 
 USE_MTF = True  # telegram_bot.py'deki BIST_USE_MTF ile ayni mantik
 
@@ -45,13 +46,18 @@ def diagnose(ticker: str):
     print(f"{'='*60}")
 
     df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
-    ind = compute_all_indicators(df, preset=PRESET, timeframe_minutes=240)
+    from telegram_bot import resolve_symbol_config
+    cfg = resolve_symbol_config(ticker, {
+        "preset": PRESET, "eff_score": EFF_SCORE,
+        "min_conf": MIN_CONF, "grade_filter": GRADE_FILTER,
+    })
+    ind = compute_all_indicators(df, preset=cfg["preset"], timeframe_minutes=240)
     mtf_frame = fetch_mtf_frame(ticker, df, fetch_ohlcv) if USE_MTF else None
     sc = calc_bull_bear_score(ind, mtf=mtf_frame)
     tr = calc_triggers(ind, sc)
-    sg = generate_signals(ind, sc, tr, preset=PRESET,
-                           eff_score=EFF_SCORE, min_conf=MIN_CONF,
-                           grade_filter=GRADE_FILTER)
+    sg = generate_signals(ind, sc, tr, preset=cfg["preset"],
+                           eff_score=cfg["eff_score"], min_conf=cfg["min_conf"],
+                           grade_filter=cfg["grade_filter"])
     fs = apply_all_filters(ind, sg, use_cvd=True)
 
     buy_dates = df.index[fs["buy_signal"]].tolist()
@@ -88,9 +94,10 @@ def diagnose(ticker: str):
 
     # Son 30 gunun gunluk skor/RSI/RVOL detayini da goster
     # (sinyal olmasa bile "neden esigi gecemedi" sorusuna isik tutar)
+    droplet = calc_smart_money_droplet(ind)
     print("\n  --- Son 20 mumun (4H) detayi ---")
     print(f"  {'Tarih/Saat':<17}{'Kapanis':>10}{'Bull':>7}{'Bear':>7}"
-          f"{'RSI':>7}{'RVOL':>7}{'TrigB':>7}{'TrigS':>7}{'BUY':>6}{'SELL':>6}")
+          f"{'RSI':>7}{'RVOL':>7}{'TrigB':>7}{'TrigS':>7}{'BUY':>6}{'SELL':>6}{'DAMLA':>7}")
     tail_n = 20
     for d in df.index[-tail_n:]:
         print(f"  {d.strftime('%Y-%m-%d %H:%M'):<17}{df.loc[d,'close']:>10.2f}"
@@ -99,7 +106,8 @@ def diagnose(ticker: str):
               f"{str(bool(tr.loc[d,'trigger_bull'])):>7}"
               f"{str(bool(tr.loc[d,'trigger_bear'])):>7}"
               f"{str(bool(fs.loc[d,'buy_signal'])):>6}"
-              f"{str(bool(fs.loc[d,'sell_signal'])):>6}")
+              f"{str(bool(fs.loc[d,'sell_signal'])):>6}"
+              f"{str(bool(droplet.loc[d,'smart_money_droplet'])):>7}")
 
 
 if __name__ == "__main__":
