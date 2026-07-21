@@ -33,11 +33,14 @@ Degisiklikler (onceki versiyona gore):
      barin zaman damgasi mesaja ekleniyor (TradingView'de hangi muma
      bakman gerektigini net gostermek icin).
 
-  NOT: Pine tarafindaki MTF Likidite Filtresi (i_useMTF, 5dk/15dk/1sa
-  liquidity-sweep tabanli mtfOkBull/mtfOkBear), Whale Onayi (i_useW,
-  confBull/confBear icine giren whale onayi) ve Alt TF Cooldown Kilidi
-  (ltfOkBull/ltfOkBear) bu Python kodunda hala birebir uygulanmiyor --
-  bunlarin karsiligi yok, tam parite icin ayri bir calisma gerekir.
+  NOT (GUNCEL): Pine tarafindaki MTF Likidite Filtresi (i_useMTF, 5dk/
+  15dk/1sa liquidity-sweep tabanli mtfOkBull/mtfOkBear) ARTIK uygulaniyor
+  -- bkz. engine/liquidity_mtf.py + engine/signals.py. Whale Onayi da
+  (confBull/confBear icine giren w_buy_recent/w_sell_recent) uygulandi.
+  Hala TASINMAYANLAR: (a) Alt TF Cooldown Kilidi (ltfOkBull/ltfOkBear) --
+  bu bot 4H calistigi icin (isLTF=False) zaten devre disi, atlanmasi
+  guvenli; (b) gorsel VAH/VAL breakout etiketi ("Roket/Selale") -- sadece
+  gorsel, ana LONG/SHORT sinyaliyle ilgisi yok.
 """
 
 import sys
@@ -415,12 +418,15 @@ def scan_crypto(crypto_state: dict):
     for coin, p in COINS.items():
         p = resolve_symbol_config(coin, p)
         try:
-            df = fetch_smart(coin, "4h", "60d")
+            df = fetch_smart(coin, "4h", "1y")
             if len(df) < 60:
                 print(f"  {coin}: yetersiz veri ({len(df)} bar)")
                 continue
 
-            ind = compute_all_indicators(df, preset=p["preset"], timeframe_minutes=240)
+            # [FIX] adr_mult artik canlida da uygulaniyor (coin'e ozel: BTC
+            # 1.5 / ETH 2.8 / SOL 1.9) -- eskiden hep 1.5'te kaliyordu.
+            ind = compute_all_indicators(df, preset=p["preset"], timeframe_minutes=240,
+                                         adr_mult=p.get("adr_mult"))
 
             mtf_frame = fetch_mtf_frame(coin, df, fetch_ohlcv) if CRYPTO_USE_MTF else None
             sc = calc_bull_bear_score(ind, mtf=mtf_frame)
@@ -469,8 +475,17 @@ def scan_crypto(crypto_state: dict):
             last_vol = df["volume"].iloc[-1]
             ghost_bar_warning = avg_vol_recent > 0 and last_vol < avg_vol_recent * 0.15
 
+            # [FIX] Bu 4 tanim eskiden EKSIKTI -- price/stop_pct/score/
+            # tp1_pct hic atanmadan kullaniliyor, her kripto LONG/SHORT
+            # sinyalinde UnboundLocalError firlatiyor ve sinyal Telegram'a
+            # HIC gitmiyordu (scan_bist'te bu satirlar vardi, scan_crypto'ya
+            # kopyalanmamis). Artik BIST tarafiyla birebir ayni.
             bull_score = sg.loc[signal_bar, "total_bull_score"]
             bear_score = sg.loc[signal_bar, "total_bear_score"]
+            price = df.loc[signal_bar, "close"]
+            stop_pct = ind.loc[signal_bar, "safe_stop_pct"]
+            score = bull_score if direction == "LONG" else bear_score
+            tp1_pct = stop_pct * 1.0
             tp2_pct = stop_pct * p["rr_ratio"]
             if direction == "LONG":
                 sl = price * (1 - stop_pct / 100)
@@ -506,7 +521,15 @@ def scan_bist(bist_state: dict):
     droplet_events = []
     for ticker in BIST100_YF:
         try:
-            df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
+            # [FIX] Eskiden "60d" cekiliyordu -- BIST seansi gunde ~2 adet
+            # 4H bar urettigi icin 60 gun ~85 bar demekti ve ema_200 /
+            # Zone POC (lookback=200) NEREDEYSE HEP NaN kaliyordu. Bu da
+            # "ana trend" 200-EMA filtresini BIST'te sessizce devre disi
+            # birakip TradingView'dekinden farkli sinyaller uretiyordu.
+            # "1y" ile ema_200 artik gecerli (TW paritesi duzeliyor). MTF
+            # alt-TF verisi (5m/15m/1h) zaten ayrica 60g ile cekiliyor,
+            # ondan etkilenmez.
+            df = fetch_smart(ticker, "4h", "1y", resample_offset="2h")
             if len(df) < 60:
                 print(f"  {ticker}: yetersiz veri ({len(df)} bar)")
                 continue
@@ -517,7 +540,8 @@ def scan_bist(bist_state: dict):
                 "adr_mult": None, "rr_ratio": BIST_RR_RATIO,
             })
 
-            ind = compute_all_indicators(df, preset=cfg["preset"], timeframe_minutes=240)
+            ind = compute_all_indicators(df, preset=cfg["preset"], timeframe_minutes=240,
+                                         adr_mult=cfg.get("adr_mult"))
 
             mtf_frame = fetch_mtf_frame(ticker, df, fetch_ohlcv) if BIST_USE_MTF else None
             sc = calc_bull_bear_score(ind, mtf=mtf_frame)

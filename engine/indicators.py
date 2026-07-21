@@ -231,89 +231,7 @@ def calc_adr_stop(close, adr_pct, adr_mult=1.5, slip_pct=0.1):
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 5: TST CORE — Fourier + ADF Momentum
-# ══════════════════════════════════════════════════════════════════
-
-def calc_tst_core(close, volume, length=14, smoothing=5,
-                  signal_len=9, four_len=20, four_blend=0.4,
-                  momentum_lookback=8):
-    rel_volume    = volume / volume.rolling(length).mean().clip(lower=0.0001)
-    price_change  = close.diff()
-    smoothed_vol  = rel_volume.ewm(span=smoothing, adjust=False).mean()
-    smoothed_chg  = price_change.ewm(span=smoothing, adjust=False).mean()
-    base_momentum = (smoothed_chg * smoothed_vol).ewm(span=smoothing, adjust=False).mean()
-    pos_mom = base_momentum.clip(lower=0).ewm(span=length, adjust=False).mean()
-    neg_mom = base_momentum.clip(upper=0).abs().ewm(span=length, adjust=False).mean()
-    ratio   = pos_mom / neg_mom.clip(lower=0.00001)
-    tst_ema = (100.0 * (ratio - 1.0) / (ratio + 1.0)).clip(-100, 100)
-    tst_fourier = tst_ema.rolling(four_len).mean()
-    sma_s = tst_ema.rolling(max(1, length // 3)).mean()
-    sma_l = tst_ema.rolling(length).mean()
-    vol_s = tst_ema.rolling(length).std()
-    ts    = ((sma_s - sma_l) / vol_s.clip(lower=0.0001)).clip(-0.1, 0.1)
-    adf_mult = 1.0 + ts * 0.2
-    tst = ((tst_ema * (1 - four_blend) + tst_fourier * four_blend) * adf_mult).clip(-100, 100)
-    tst_signal = tst.rolling(signal_len).mean()
-    flow_momentum = (tst - tst.ewm(span=momentum_lookback, adjust=False).mean()) * 0.5
-    adf_ok = (adf_mult - 1.0).abs() > 0.001
-    return pd.DataFrame({
-        "tst":           tst,
-        "tst_signal":    tst_signal,
-        "flow_momentum": flow_momentum,
-        "tst_bull":      (tst > 0) & (tst > tst.shift(1)),
-        "tst_bear":      (tst < 0) & (tst < tst.shift(1)),
-        "adf_ok":        adf_ok,
-    })
-
-
-# ══════════════════════════════════════════════════════════════════
-# BÖLÜM 6: EMA COMPRESSION BREAKOUT
-# ══════════════════════════════════════════════════════════════════
-
-def calc_ema_compression(close, open_, volume, bask_gun=2,
-                          hacim_carp=1.2, hacim_per=20):
-    ema5  = close.ewm(span=5,  adjust=False).mean()
-    ema8  = close.ewm(span=8,  adjust=False).mean()
-    ema13 = close.ewm(span=13, adjust=False).mean()
-    avg_vol = volume.rolling(hacim_per).mean()
-    yuksek_hacim = volume > (avg_vol * hacim_carp)
-    altinda = (close < ema5) & (close < ema8) & (close < ema13)
-    gecmis_baski = altinda.rolling(bask_gun + 1).sum() >= bask_gun
-    ustunde = (close > ema5) & (close > ema8) & (close > ema13)
-    boga_mumu = close > open_
-    compression_breakout = gecmis_baski.shift(1) & ustunde & yuksek_hacim & boga_mumu
-    return pd.DataFrame({
-        "ema5": ema5, "ema8": ema8, "ema13": ema13,
-        "ema_altinda": altinda,
-        "compression_breakout": compression_breakout,
-    })
-
-
-# ══════════════════════════════════════════════════════════════════
-# BÖLÜM 7: HEİKİN ASHI SERT KOPUŞ
-# ══════════════════════════════════════════════════════════════════
-
-def calc_ha_breakout(open_, high, low, close, ema_period=55, min_pct=0.015):
-    ha_close = (open_ + high + low + close) / 4
-    ha_open  = ha_close.copy()
-    for i in range(1, len(ha_open)):
-        ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    ha_govde_ust = pd.concat([ha_open, ha_close], axis=1).max(axis=1)
-    ha_govde_boy = (ha_govde_ust - pd.concat([ha_open, ha_close], axis=1).min(axis=1))
-    ema55 = close.ewm(span=ema_period, adjust=False).mean()
-    yesil_mum  = ha_close > ha_open
-    sert_kopis = (ha_close > ema55) & (ha_close > ha_close.shift(1) * (1 + min_pct))
-    yarim_boy  = (ha_govde_ust - ema55) > (ha_govde_boy * 0.4)
-    return pd.DataFrame({
-        "ha_close":    ha_close,
-        "ha_open":     ha_open,
-        "ema55":       ema55,
-        "ha_breakout": yesil_mum & sert_kopis & yarim_boy,
-    })
-
-
-# ══════════════════════════════════════════════════════════════════
-# BÖLÜM 8: VPA CLİMAX — Tepe/Dip Tükenis Tespiti
+# BÖLÜM 5: VPA CLİMAX — Tepe/Dip Tükenis Tespiti
 # ══════════════════════════════════════════════════════════════════
 
 def calc_vpa_climax(open_, high, low, close, volume, climax_mult=2.5):
@@ -334,7 +252,7 @@ def calc_vpa_climax(open_, high, low, close, volume, climax_mult=2.5):
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 9: ZONE BINNING — Kurumsal Agirlik Merkezi (Hizli POC)
+# BÖLÜM 6: ZONE BINNING — Kurumsal Agirlik Merkezi (Hizli POC)
 # Kaynak: Deep Impact
 # Son N bardaki en yogun islem bölgesini (POC) bulur
 # Fiyat POC ustundeyse long, altindaysa short onaylı
@@ -384,12 +302,13 @@ def calc_zone_poc(high, low, close, volume, lookback=200):
 
 
 # ══════════════════════════════════════════════════════════════════
-# BÖLÜM 10: ANA HESAPLAMA FONKSİYONU
+# BÖLÜM 7: ANA HESAPLAMA FONKSİYONU
 # ══════════════════════════════════════════════════════════════════
 
 def compute_all_indicators(df, adr_series=None, preset="Default",
                            timeframe_minutes=240,
-                           whale_auto_tf=True, whale_manual_min_m=5.0):
+                           whale_auto_tf=True, whale_manual_min_m=5.0,
+                           adr_mult=1.5):
     """
     [FIX] timeframe_minutes=240 (4H) varsayilan -- bu bot her zaman 4H
     calisiyor. Baska bir TF'de kullanirsan bu degeri de degistirmen
@@ -397,7 +316,15 @@ def compute_all_indicators(df, adr_series=None, preset="Default",
     gore otomatik hesaplaniyor, burada elle veriliyor cunku Python
     tarafinda "hangi TF'de calisiyoruz" bilgisi grafikten degil
     fonksiyon parametresinden geliyor).
+
+    [FIX] adr_mult: safe_stop_pct (ADR tabanli stop mesafesi) artik
+    sembole ozel adr_mult ile hesaplaniyor. Eskiden calc_adr_stop hep
+    varsayilan 1.5 ile cagriliyordu -- COINS/best_params icindeki coin'e
+    ozel adr_mult (orn. ETH 2.8, SOL 1.9) CANLIDA yok sayiliyordu. None
+    verilirse (BIST varsayilani) 1.5'e duser.
     """
+    if adr_mult is None:
+        adr_mult = 1.5
     presets = {
         "Scalping":     {"fast": 5,  "mid": 13, "slow": 34, "rsi": 8},
         "Aggressive":   {"fast": 8,  "mid": 18, "slow": 50, "rsi": 11},
@@ -453,21 +380,8 @@ def compute_all_indicators(df, adr_series=None, preset="Default",
     else:
         atr = calc_atr(df["high"], df["low"], df["close"], 14)
         adr_reindexed = (atr / df["close"] * 100).rolling(14).mean()
-    out = pd.concat([out, calc_adr_stop(df["close"], adr_reindexed)], axis=1)
+    out = pd.concat([out, calc_adr_stop(df["close"], adr_reindexed, adr_mult=adr_mult)], axis=1)
     out["adr_pct"] = adr_reindexed
-
-    # TST Core
-    out = pd.concat([out, calc_tst_core(df["close"], df["volume"])], axis=1)
-
-    # EMA Compression Breakout
-    out = pd.concat([out, calc_ema_compression(
-        df["close"], df["open"], df["volume"]
-    )], axis=1)
-
-    # Heikin Ashi Breakout
-    out = pd.concat([out, calc_ha_breakout(
-        df["open"], df["high"], df["low"], df["close"]
-    )], axis=1)
 
     # VPA Climax
     out = pd.concat([out, calc_vpa_climax(
