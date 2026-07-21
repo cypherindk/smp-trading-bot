@@ -45,9 +45,9 @@ def diagnose(ticker: str):
     print(f"  {ticker}  [4H]")
     print(f"{'='*60}")
 
-    # [FIX] telegram_bot.py ile ayni: "60d" -> "1y" (ema_200/Zone POC'un
-    # BIST'te gecerli olmasi icin, bkz. telegram_bot.py scan_bist notu).
-    df = fetch_smart(ticker, "4h", "1y", resample_offset="2h")
+    # telegram_bot.py ile ayni periyot ("60d" -- hiz nedeniyle 1y'dan
+    # geri donuldu, bkz. scan_bist icindeki NOT).
+    df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
     from telegram_bot import resolve_symbol_config
     cfg = resolve_symbol_config(ticker, {
         "preset": PRESET, "eff_score": EFF_SCORE,

@@ -418,7 +418,7 @@ def scan_crypto(crypto_state: dict):
     for coin, p in COINS.items():
         p = resolve_symbol_config(coin, p)
         try:
-            df = fetch_smart(coin, "4h", "1y")
+            df = fetch_smart(coin, "4h", "60d")
             if len(df) < 60:
                 print(f"  {coin}: yetersiz veri ({len(df)} bar)")
                 continue
@@ -521,15 +521,16 @@ def scan_bist(bist_state: dict):
     droplet_events = []
     for ticker in BIST100_YF:
         try:
-            # [FIX] Eskiden "60d" cekiliyordu -- BIST seansi gunde ~2 adet
-            # 4H bar urettigi icin 60 gun ~85 bar demekti ve ema_200 /
-            # Zone POC (lookback=200) NEREDEYSE HEP NaN kaliyordu. Bu da
-            # "ana trend" 200-EMA filtresini BIST'te sessizce devre disi
-            # birakip TradingView'dekinden farkli sinyaller uretiyordu.
-            # "1y" ile ema_200 artik gecerli (TW paritesi duzeliyor). MTF
-            # alt-TF verisi (5m/15m/1h) zaten ayrica 60g ile cekiliyor,
-            # ondan etkilenmez.
-            df = fetch_smart(ticker, "4h", "1y", resample_offset="2h")
+            # NOT (HIZ): "1y" denendi (ema_200 & Zone POC'un tam gecerli
+            # olmasi icin) ama 90 BIST hissesi x 1 yillik 1h veri, yfinance/
+            # Yahoo hiz-limitine takilip taramayi ~1 saate cikardi. Bu
+            # yuzden "60d"ye geri donuldu -- bu durumda BIST'te ema_200
+            # tam isinmiyor ve Zone POC (rolling 200) cogu bar NaN kaliyor
+            # (POC sadece +1.0 BONUS, sert filtre degil; sinyal uretimi
+            # calismaya devam eder). Daha yuksek TW sadakati istenirse
+            # "180d" (~6ay, ~260 bar) araya alinabilir -- POC'u tekrar
+            # aktif eder, sure ~1y'in yarisi kadardir.
+            df = fetch_smart(ticker, "4h", "60d", resample_offset="2h")
             if len(df) < 60:
                 print(f"  {ticker}: yetersiz veri ({len(df)} bar)")
                 continue
