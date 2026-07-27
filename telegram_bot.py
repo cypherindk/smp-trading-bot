@@ -331,7 +331,8 @@ def format_whale_message(w: dict) -> str:
 Whale Skoru: {w['whale_score']:.0f}%
 İşlem Hacmi: {w['dv_m']:.2f}M {w['currency']}
 Fiyat: {w['price']:,.4f} {w['currency']}
-⏰ {datetime.now(IST).strftime('%d.%m.%Y %H:%M')}
+🕓 Whale Muma: {_fmt_ist(w.get('signal_time'))}  (TSİ — TW'de bu muma bak)
+⏰ Gönderim: {datetime.now(IST).strftime('%d.%m.%Y %H:%M')}
 ━━━━━━━━━━━━━━━━━━━━━
 Bu, ana SMP sinyalinden bağımsız bir para akışı uyarısıdır.
 Sadece takip listesi amaçlıdır."""
@@ -476,6 +477,7 @@ def scan_crypto(crypto_state: dict):
                     "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
+                    "signal_time": df.index[-1],   # [FIX] whale mumu = son bar, saati TSİ gosterilecek
                 })
 
             # [YENİ] 💧 Smart Money Flow damlasi (ana LONG/SHORT sinyalinden
@@ -594,6 +596,7 @@ def scan_bist(bist_state: dict):
                     "whale_score": whale_score_now,
                     "dv_m": ind["dv_m"].iloc[-1],
                     "price": df["close"].iloc[-1],
+                    "signal_time": df.index[-1],   # [FIX] whale mumu = son bar, saati TSİ gosterilecek
                 })
 
             # [YENİ] 💧 Smart Money Flow damlasi (ana LONG/SHORT sinyalinden
