@@ -48,11 +48,16 @@ import os
 import time
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Turkiye kalici UTC+3 (2016'dan beri DST yok). Telegram'daki sinyal/gonderim
+# saatlerini TW ekranindaki (Istanbul) mumla AYNI gostermek icin.
+IST = timezone(timedelta(hours=3))
+
 from data.fetcher import fetch_ohlcv
+from data.crypto_fetcher import fetch_binance_ohlcv   # [FIX] kripto verisi artik Binance (TW ile ayni kaynak)
 from engine.indicators import compute_all_indicators
 from engine.signals import calc_bull_bear_score, calc_triggers, generate_signals
 from engine.filters import apply_all_filters
@@ -205,6 +210,29 @@ def fetch_smart(symbol: str, timeframe: str, period: str, resample_offset: str =
     return fetch_ohlcv(symbol, interval=timeframe, period=period)
 
 
+def _binance_fetch_ohlcv(symbol, interval="1h", period="60d"):
+    """fetch_mtf_frame'in bekledigi (symbol, interval, period) imzasi -> Binance days."""
+    days = 60
+    if isinstance(period, str) and period.endswith("d"):
+        try:
+            days = int(period[:-1])
+        except ValueError:
+            days = 60
+    return fetch_binance_ohlcv(symbol, interval=interval, days=days)
+
+
+def _fmt_ist(ts):
+    """tz-aware zaman damgasini Turkiye saatine (UTC+3) cevirip formatla."""
+    if ts is None:
+        return "?"
+    try:
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.tz_convert(IST) if hasattr(ts, "tz_convert") else ts.astimezone(IST)
+    except Exception:
+        pass
+    return ts.strftime('%d.%m.%Y %H:%M')
+
+
 # ───────────────────────── Telegram ─────────────────────────
 
 def send_message(text: str) -> bool:
@@ -253,7 +281,7 @@ def format_signal_message(opp: dict) -> str:
     asset_tag = "🪙 KRİPTO" if opp["asset_type"] == "crypto" else "🇹🇷 BIST"
     timeframe = opp.get("timeframe", "4H")
     signal_time = opp.get("signal_time")
-    signal_time_str = signal_time.strftime('%d.%m.%Y %H:%M') if signal_time is not None else "?"
+    signal_time_str = _fmt_ist(signal_time)
 
     msg = f"""🚨 <b>SMP SİNYAL</b> — {asset_tag} 🚨
 ━━━━━━━━━━━━━━━━━━━━━
@@ -279,8 +307,8 @@ Grade: {grade_emoji} <b>{grade}</b>  |  Skor: {score:.1f}/10
 ━━━━━━━━━━━━━━━━━━━━━
 ⚖️ R/R Orani:  1:{rr:.1f}
 📊 RVOL: {rvol:.2f}x  |  RSI: {rsi:.0f}
-🕓 Sinyal Muma:  {signal_time_str}  (TW'de bu muma bak)
-⏰ Gonderim: {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+🕓 Sinyal Muma:  {signal_time_str}  (TSİ — TW'de bu muma bak)
+⏰ Gonderim: {datetime.now(IST).strftime('%d.%m.%Y %H:%M')}"""
 
     if opp.get("ghost_bar_warning"):
         msg += """
@@ -303,7 +331,7 @@ def format_whale_message(w: dict) -> str:
 Whale Skoru: {w['whale_score']:.0f}%
 İşlem Hacmi: {w['dv_m']:.2f}M {w['currency']}
 Fiyat: {w['price']:,.4f} {w['currency']}
-⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}
+⏰ {datetime.now(IST).strftime('%d.%m.%Y %H:%M')}
 ━━━━━━━━━━━━━━━━━━━━━
 Bu, ana SMP sinyalinden bağımsız bir para akışı uyarısıdır.
 Sadece takip listesi amaçlıdır."""
@@ -317,7 +345,7 @@ def format_droplet_message(d: dict) -> str:
     alert'ten TAMAMEN bagimsiz, ayri bir olay.
     """
     asset_tag = "🪙 KRİPTO" if d["asset_type"] == "crypto" else "🇹🇷 BIST"
-    signal_time_str = d["signal_time"].strftime('%d.%m.%Y %H:%M')
+    signal_time_str = _fmt_ist(d["signal_time"])
     return f"""💧 <b>SMART MONEY FLOW</b> — {asset_tag} 💧
 ━━━━━━━━━━━━━━━━━━━━━
 <b>{d['label']}</b>
@@ -325,8 +353,8 @@ Fiyat düşerken CVD/MFI güçleniyor -- olası öncül para girişi.
 
 Fiyat: {d['price']:,.4f} {d['currency']}
 RVOL: {d['rvol']:.2f}x
-🕓 Sinyal Muma: {signal_time_str}  (TW'de bu muma bak)
-⏰ Gönderim: {datetime.now().strftime('%d.%m.%Y %H:%M')}
+🕓 Sinyal Muma: {signal_time_str}  (TSİ — TW'de bu muma bak)
+⏰ Gönderim: {datetime.now(IST).strftime('%d.%m.%Y %H:%M')}
 ━━━━━━━━━━━━━━━━━━━━━
 Bu, ana LONG/SHORT sinyalinden ve whale alert'ten bağımsız,
 öncül bir gizli-diverjans uyarısıdır. Kendi analizinizi yapın."""
@@ -418,7 +446,9 @@ def scan_crypto(crypto_state: dict):
     for coin, p in COINS.items():
         p = resolve_symbol_config(coin, p)
         try:
-            df = fetch_smart(coin, "4h", "60d")
+            # [FIX] Kripto verisi artik Binance'ten (TW ile AYNI kaynak). Binance
+            # 4h'i native destekler (resample yok). 300 gun -> EMA200 iyi seedlenir.
+            df = fetch_binance_ohlcv(coin, interval="4h", days=300)
             if len(df) < 60:
                 print(f"  {coin}: yetersiz veri ({len(df)} bar)")
                 continue
@@ -428,7 +458,7 @@ def scan_crypto(crypto_state: dict):
             ind = compute_all_indicators(df, preset=p["preset"], timeframe_minutes=240,
                                          adr_mult=p.get("adr_mult"))
 
-            mtf_frame = fetch_mtf_frame(coin, df, fetch_ohlcv) if CRYPTO_USE_MTF else None
+            mtf_frame = fetch_mtf_frame(coin, df, _binance_fetch_ohlcv) if CRYPTO_USE_MTF else None
             sc = calc_bull_bear_score(ind, mtf=mtf_frame)
             tr = calc_triggers(ind, sc)
             sg = generate_signals(ind, sc, tr, preset=p["preset"],
