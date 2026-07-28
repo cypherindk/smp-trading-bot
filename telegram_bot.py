@@ -72,7 +72,10 @@ from bist100_tickers import BIST100_YF
 # riskini artirir. Cok yavas/hata aliyorsa BIST_USE_MTF=False yapip
 # sadece kripto icin acik birakabilirsin (3 coin x 4 istek = 12, sorun
 # degil).
-CRYPTO_USE_MTF = True
+# [FIX] MTF kapatildi: Binance'ten 5m/15m/1h sayfa cekimi run'i ~4-6dk
+# yavaslatiyordu + MTF portun EN AZ SADIK parcasi (TV-sapma kaynagi). Kapali =
+# hizli (~1-2dk) + TV'ye daha yakin sinyal. Tekrar acmak: CRYPTO_USE_MTF = True.
+CRYPTO_USE_MTF = False
 BIST_USE_MTF = True
 
 # [YENİ] BIST RAFA KALDIRILDI (crypto-only). BIST verisi (yfinance) TV'nin BIST
