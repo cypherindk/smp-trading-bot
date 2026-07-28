@@ -75,6 +75,12 @@ from bist100_tickers import BIST100_YF
 CRYPTO_USE_MTF = True
 BIST_USE_MTF = True
 
+# [YENİ] BIST RAFA KALDIRILDI (crypto-only). BIST verisi (yfinance) TV'nin BIST
+# feed'iyle eslesmedigi icin simdilik KAPALI; kod (scan_bist, bist100_tickers)
+# repoda duruyor -- sonra ayri repo / duzgun veri kaynagiyla ele alinacak.
+# Tekrar acmak icin tek satir: SCAN_BIST = True.
+SCAN_BIST = False
+
 # ── [YENİ] optimize/run_batch.py'nin ürettiği best_params.json ──
 # Bir sembol icin optimize edilmis parametre varsa AŞAĞIDAKİ COINS/BIST_*
 # sabitlerinin YERINE gecer (preset dahil -- kullanicinin istegi:
@@ -693,8 +699,8 @@ def _dispatch(opportunities, whale_events, droplet_events, crypto_state, bist_st
 
 
 def scan_and_notify():
-    print(f"\n[{datetime.now(IST).strftime('%H:%M')}] SMP Tarama basladi "
-          f"(3 kripto + {len(BIST100_YF)} BIST hissesi)...")
+    scope = f"3 kripto + {len(BIST100_YF)} BIST hissesi" if SCAN_BIST else "3 kripto (crypto-only)"
+    print(f"\n[{datetime.now(IST).strftime('%H:%M')}] SMP Tarama basladi ({scope})...")
 
     crypto_state = load_state(CRYPTO_STATE_PATH)
     bist_state = load_state(BIST_STATE_PATH)
@@ -706,10 +712,13 @@ def scan_and_notify():
     _dispatch(c_opps, c_whales, c_drops, crypto_state, bist_state)
     save_state(CRYPTO_STATE_PATH, crypto_state)
 
-    # BIST sonra (yavas)
-    b_opps, b_whales, b_drops = scan_bist(bist_state)
-    _dispatch(b_opps, b_whales, b_drops, crypto_state, bist_state)
-    save_state(BIST_STATE_PATH, bist_state)
+    # BIST sonra (yavas) -- RAFA KALDIRILDI (SCAN_BIST=False -> crypto-only).
+    # Kod duruyor; sonra ayri repo/duzgun veri kaynagiyla ele alinacak.
+    b_opps, b_whales, b_drops = [], [], []
+    if SCAN_BIST:
+        b_opps, b_whales, b_drops = scan_bist(bist_state)
+        _dispatch(b_opps, b_whales, b_drops, crypto_state, bist_state)
+        save_state(BIST_STATE_PATH, bist_state)
 
     total = (len(c_opps) + len(c_whales) + len(c_drops) +
              len(b_opps) + len(b_whales) + len(b_drops))
