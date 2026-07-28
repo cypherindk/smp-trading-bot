@@ -664,63 +664,58 @@ def scan_bist(bist_state: dict):
     return opportunities, whale_events, droplet_events
 
 
+def _dispatch(opportunities, whale_events, droplet_events, crypto_state, bist_state):
+    """Toplanan sinyal/whale/damla bildirimlerini Telegram'a gonder + dedup isaretle."""
+    if opportunities:
+        opportunities.sort(key=lambda x: (x["priority"], -x["score"]))
+        for opp in opportunities:
+            ok = send_message(format_signal_message(opp))
+            print(f"  {opp['label']} mesaji {'gonderildi' if ok else 'gonderilemedi'}")
+            if ok:
+                # Basarili gonderimden SONRA isaretle (Telegram hatasinda tekrar denensin)
+                state = crypto_state if opp["asset_type"] == "crypto" else bist_state
+                mark_notified(state, opp["dedup_key"], opp["direction"], opp["signal_time"])
+            time.sleep(1)
+    if whale_events:
+        whale_events.sort(key=lambda x: -x["whale_score"])
+        for w in whale_events:
+            ok = send_message(format_whale_message(w))
+            print(f"  {w['label']} whale alert {'gonderildi' if ok else 'gonderilemedi'}")
+            time.sleep(1)
+    if droplet_events:
+        for d in droplet_events:
+            ok = send_message(format_droplet_message(d))
+            print(f"  {d['label']} damla (SMF) alert {'gonderildi' if ok else 'gonderilemedi'}")
+            if ok:
+                state = crypto_state if d["asset_type"] == "crypto" else bist_state
+                mark_notified(state, d["dedup_key"], "DROPLET", d["signal_time"])
+            time.sleep(1)
+
+
 def scan_and_notify():
-    print(f"\n[{datetime.now().strftime('%H:%M')}] SMP Tarama basladi "
+    print(f"\n[{datetime.now(IST).strftime('%H:%M')}] SMP Tarama basladi "
           f"(3 kripto + {len(BIST100_YF)} BIST hissesi)...")
 
     crypto_state = load_state(CRYPTO_STATE_PATH)
     bist_state = load_state(BIST_STATE_PATH)
 
-    crypto_opps, crypto_whales, crypto_droplets = scan_crypto(crypto_state)
-    bist_opps, bist_whales, bist_droplets = scan_bist(bist_state)
-
-    opportunities = crypto_opps + bist_opps
-    whale_events = crypto_whales + bist_whales
-    droplet_events = crypto_droplets + bist_droplets
-
-    if opportunities:
-        opportunities.sort(key=lambda x: (x["priority"], -x["score"]))
-        for opp in opportunities:
-            msg = format_signal_message(opp)
-            ok = send_message(msg)
-            print(f"  {opp['label']} mesaji {'gonderildi' if ok else 'gonderilemedi'}")
-            if ok:
-                # [FIX] Basarili gonderimden SONRA isaretle -- Telegram
-                # hata verirse (ag/limit vb.) bir sonraki taramada tekrar
-                # denensin, sessizce "gonderildi" sayilmasin.
-                state = crypto_state if opp["asset_type"] == "crypto" else bist_state
-                mark_notified(state, opp["dedup_key"], opp["direction"], opp["signal_time"])
-            time.sleep(1)
-    else:
-        print("  Aktif sinyal yok.")
-
-    if whale_events:
-        whale_events.sort(key=lambda x: -x["whale_score"])
-        for w in whale_events:
-            msg = format_whale_message(w)
-            ok = send_message(msg)
-            print(f"  {w['label']} whale alert {'gonderildi' if ok else 'gonderilemedi'}")
-            time.sleep(1)
-    else:
-        print("  Whale alert yok.")
-
-    # [YENİ] 💧 Smart Money Flow damla bildirimleri
-    if droplet_events:
-        for d in droplet_events:
-            msg = format_droplet_message(d)
-            ok = send_message(msg)
-            print(f"  {d['label']} damla (💧) alert {'gonderildi' if ok else 'gonderilemedi'}")
-            if ok:
-                state = crypto_state if d["asset_type"] == "crypto" else bist_state
-                mark_notified(state, d["dedup_key"], "DROPLET", d["signal_time"])
-            time.sleep(1)
-    else:
-        print("  Damla (💧) alert yok.")
-
+    # [FIX] KRIPTO once taranir VE HEMEN gonderilir -- yavas BIST taramasi (90
+    # hisse) kripto sinyalini artik BEKLETMESIN. Eskiden ikisi de tarandiktan
+    # SONRA gonderiliyordu; bu, kripto sinyalini ~10-30 dk geciktiriyordu.
+    c_opps, c_whales, c_drops = scan_crypto(crypto_state)
+    _dispatch(c_opps, c_whales, c_drops, crypto_state, bist_state)
     save_state(CRYPTO_STATE_PATH, crypto_state)
+
+    # BIST sonra (yavas)
+    b_opps, b_whales, b_drops = scan_bist(bist_state)
+    _dispatch(b_opps, b_whales, b_drops, crypto_state, bist_state)
     save_state(BIST_STATE_PATH, bist_state)
 
-    return len(opportunities) + len(whale_events) + len(droplet_events)
+    total = (len(c_opps) + len(c_whales) + len(c_drops) +
+             len(b_opps) + len(b_whales) + len(b_drops))
+    if total == 0:
+        print("  Aktif sinyal/whale/damla yok.")
+    return total
 
 
 def send_test_message():
