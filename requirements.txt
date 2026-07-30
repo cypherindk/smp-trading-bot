@@ -1,0 +1,7 @@
+# SMP botu (telegram_bot.py) CANLI calisma bagimliliklari — SADECE bunlar.
+# vectorbt/optuna/scipy YOK: onlar sadece backtest/ ve optimize/ icin, bot
+# calisirken kullanilmiyor -> Actions kurulumunu ~2-5dk'dan ~30-60sn'ye indirir.
+pandas
+numpy
+requests
+yfinance
